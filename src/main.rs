@@ -3,9 +3,9 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 
-use clap::{CommandFactory, error::ErrorKind, Parser};
+use clap::{error::ErrorKind, CommandFactory, Parser};
 use fuser::MountOption;
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::{fmt, EnvFilter};
 
 use rfs::Rfs;
 
@@ -33,7 +33,7 @@ fn main() {
             ErrorKind::InvalidValue,
             format!("{:?} device path doesn't exists", args.device),
         )
-            .exit();
+        .exit();
     }
 
     if !args.mountpoint.exists() {
@@ -42,7 +42,7 @@ fn main() {
             ErrorKind::InvalidValue,
             format!("{:?} mountpoint path doesn't exists", args.device),
         )
-            .exit();
+        .exit();
     }
 
     setup_logger();
@@ -70,7 +70,7 @@ fn main() {
             conv_var.notify_one();
         }
     })
-        .expect("Failed to set Ctrl-C handler");
+    .expect("Failed to set Ctrl-C handler");
 
     let (mtx, conv_var) = &*conv_var;
     let mut mtx = mtx.lock().unwrap();

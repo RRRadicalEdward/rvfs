@@ -117,10 +117,7 @@ impl Rfs {
         let inode = self.find_by_id(parent_ino)?;
 
         let path = inode.path.join(name);
-        let origin_path = self
-            .origin_mount
-            .path()
-            .join(path.strip_prefix(&self.proxy_mount).unwrap());
+        let origin_path = self.proxy_path_to_origin_path(&path);
 
         if origin_path.exists() {
             return Err(FuseError::FILE_EXISTS);
@@ -171,18 +168,16 @@ impl Rfs {
 
     fn insert_item(&mut self, item: PathBuf, parent_ino: u64) -> FuseResult<()> {
         let attr = self.stat(&item)?;
-        let path = self
-            .proxy_mount
-            .join(item.strip_prefix(&self.origin_mount).unwrap());
+        let proxy_path = self.origin_path_to_proxy_path(item);
         if !self
             .inode_lists
             .iter()
-            .any(|entry| entry.1.parent_id == parent_ino && entry.1.path == path)
+            .any(|entry| entry.1.parent_id == parent_ino && entry.1.path == proxy_path)
         {
             let inode = self.last_ino_id.fetch_add(1, Ordering::Relaxed) + 1;
-            trace!("Added {:?} item", path);
+            trace!("Added {:?} item", proxy_path);
             self.inode_lists
-                .insert(inode, Inode::new(inode, path, parent_ino, attr));
+                .insert(inode, Inode::new(inode, proxy_path, parent_ino, attr));
         }
 
         Ok(())
@@ -193,10 +188,7 @@ impl Rfs {
 
         let folder_ino = inode.id;
 
-        let folder = self
-            .origin_mount
-            .path()
-            .join(folder.as_ref().strip_prefix(&self.proxy_mount).unwrap());
+        let folder = self.proxy_path_to_origin_path(folder);
         trace!("Adding folder: {:?}...", folder);
         for item in read_dir(folder).map_err(|_| FuseError::last())? {
             match item {
@@ -284,17 +276,29 @@ impl Rfs {
 
         Ok(file)
     }
+
+    fn proxy_path_to_origin_path<P: AsRef<Path>>(&self, item: P) -> PathBuf {
+        self.origin_mount
+            .path()
+            .join(item.as_ref().strip_prefix(&self.proxy_mount).unwrap())
+    }
+
+    fn origin_path_to_proxy_path<P: AsRef<Path>>(&self, item: P) -> PathBuf {
+        self.proxy_mount
+            .as_path()
+            .join(item.as_ref().strip_prefix(&self.origin_mount).unwrap())
+    }
 }
 
 impl Drop for Rfs {
     fn drop(&mut self) {
         match self.mount.unmount(UnmountFlags::DETACH) {
             Ok(()) => {
-                info!("Unmounted real {:?} mount", self.origin_mount.path());
+                info!("Unmounted origin {:?} mount", self.origin_mount.path());
             }
             Err(err) => {
                 error!(
-                    "Failed to unmounted real {:?} mount: {err}",
+                    "Failed to unmounted origin {:?} mount: {err}",
                     self.origin_mount
                 );
             }
