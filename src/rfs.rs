@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsStr,
     fs,
-    fs::{File, read_dir},
+    fs::{read_dir, File},
     ops::Add,
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -11,10 +11,11 @@ use std::{
 };
 
 use fuser::{FileAttr, FileType};
-use tracing::{debug, error, trace};
+use sys_mount::{Mount, Unmount, UnmountFlags};
+use tempdir::TempDir;
+use tracing::{debug, error, info, trace};
 
-use crate::error::FuseError;
-use crate::inode::Inode;
+use crate::{error::FuseError, inode::Inode};
 
 pub const FUSE_ROOT_INODE_ID: u64 = 1;
 
@@ -25,28 +26,42 @@ pub struct Rfs {
     pub(crate) inode_lists: BTreeMap<u64, Inode>,
     // sync access
     last_ino_id: AtomicU64,
-    mount: PathBuf,
-    origin: PathBuf,
+    proxy_mount: PathBuf,
+    origin_mount: TempDir,
+    mount: Mount,
 }
 
 impl Rfs {
-    pub fn new(origin: PathBuf, mount: PathBuf) -> Self {
-        Self {
+    pub fn new(source: PathBuf, mount_point: PathBuf) -> anyhow::Result<Self> {
+        let file_name = source
+            .file_name()
+            .expect("mount point is expected to be valid Path")
+            .to_str()
+            .unwrap();
+        let origin_mount = TempDir::new_in("/mnt", file_name).unwrap();
+        debug!("Real mount point: {:?}", origin_mount.as_ref());
+
+        let mount = Mount::builder()
+            .explicit_loopback()
+            .mount(source, origin_mount.as_ref())?;
+
+        Ok(Self {
             inode_lists: BTreeMap::new(),
             last_ino_id: AtomicU64::new(0),
+            proxy_mount: mount_point,
+            origin_mount,
             mount,
-            origin,
-        }
+        })
     }
 }
 
 impl Rfs {
     pub fn init(&mut self) {
-        let attr = self.stat(&self.origin).unwrap();
+        let attr = self.stat(&self.origin_mount).unwrap();
 
         self.inode_lists.insert(
             FUSE_ROOT_INODE_ID,
-            Inode::new(FUSE_ROOT_INODE_ID, self.mount.clone(), 0, attr),
+            Inode::new(FUSE_ROOT_INODE_ID, self.proxy_mount.clone(), 0, attr),
         );
         self.last_ino_id
             .store(FUSE_ROOT_INODE_ID, Ordering::Relaxed);
@@ -92,9 +107,10 @@ impl Rfs {
     }
 
     pub fn create(&mut self, name: &OsStr, parent_ino: u64, mode: u32) -> FuseResult<FileAttr> {
-        if self.inode_lists.iter().any(|entry| entry.1.parent_id == parent_ino &&
-            entry.1.path.file_name().unwrap_or("..".as_ref()) == name)
-        {
+        if self.inode_lists.iter().any(|entry| {
+            entry.1.parent_id == parent_ino
+                && entry.1.path.file_name().unwrap_or("..".as_ref()) == name
+        }) {
             return Err(FuseError::FILE_EXISTS);
         }
 
@@ -102,8 +118,9 @@ impl Rfs {
 
         let path = inode.path.join(name);
         let origin_path = self
-            .origin
-            .join(path.strip_prefix(&self.mount).unwrap());
+            .origin_mount
+            .path()
+            .join(path.strip_prefix(&self.proxy_mount).unwrap());
 
         if origin_path.exists() {
             return Err(FuseError::FILE_EXISTS);
@@ -138,21 +155,25 @@ impl Rfs {
             flags: 0,
         };
 
-        let _ = self.inode_lists.insert(ino, Inode {
-            id: ino,
-            path,
-            parent_id: parent_ino,
-            attr,
-            open_handles: Default::default(),
-        });
+        let _ = self.inode_lists.insert(
+            ino,
+            Inode {
+                id: ino,
+                path,
+                parent_id: parent_ino,
+                attr,
+                open_handles: Default::default(),
+            },
+        );
 
         Ok(attr)
     }
 
-
     fn insert_item(&mut self, item: PathBuf, parent_ino: u64) -> FuseResult<()> {
         let attr = self.stat(&item)?;
-        let path = self.mount.join(item.strip_prefix(&self.origin).unwrap());
+        let path = self
+            .proxy_mount
+            .join(item.strip_prefix(&self.origin_mount).unwrap());
         if !self
             .inode_lists
             .iter()
@@ -173,8 +194,9 @@ impl Rfs {
         let folder_ino = inode.id;
 
         let folder = self
-            .origin
-            .join(folder.as_ref().strip_prefix(&self.mount).unwrap());
+            .origin_mount
+            .path()
+            .join(folder.as_ref().strip_prefix(&self.proxy_mount).unwrap());
         trace!("Adding folder: {:?}...", folder);
         for item in read_dir(folder).map_err(|_| FuseError::last())? {
             match item {
@@ -206,7 +228,7 @@ impl Rfs {
             .find(|entry| {
                 entry.1.parent_id == parent.id
                     && entry.1.path.file_name().unwrap_or(OsStr::new(".."))
-                    == name.as_ref().as_os_str()
+                        == name.as_ref().as_os_str()
             })
             .map(|(_, inode)| inode)
             .ok_or(FuseError::NO_EXIST)
@@ -249,8 +271,9 @@ impl Rfs {
         }
 
         let path = self
-            .origin
-            .join(node.path.strip_prefix(&self.mount).unwrap());
+            .origin_mount
+            .path()
+            .join(node.path.strip_prefix(&self.proxy_mount).unwrap());
         let file = match File::options().read(true).write(false).open(&path) {
             Ok(file) => file,
             Err(err) => {
@@ -260,6 +283,22 @@ impl Rfs {
         };
 
         Ok(file)
+    }
+}
+
+impl Drop for Rfs {
+    fn drop(&mut self) {
+        match self.mount.unmount(UnmountFlags::DETACH) {
+            Ok(()) => {
+                info!("Unmounted real {:?} mount", self.origin_mount.path());
+            }
+            Err(err) => {
+                error!(
+                    "Failed to unmounted real {:?} mount: {err}",
+                    self.origin_mount
+                );
+            }
+        }
     }
 }
 

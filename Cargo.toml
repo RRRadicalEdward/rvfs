@@ -8,7 +8,7 @@ description = "Proxy VFS that focuses on forbitting access malwares"
 [[bin]]
 name = "rvfs"
 path = "src/main.rs"
-Proxy VFS that focuses on forbitting access malwares
+
 [dependencies]
 fuser = "0.12.0"
 tracing = { version = "0.1", default-features = false, features = ["default", "log", "attributes"] }
@@ -18,3 +18,8 @@ libc = "0.2"
 tempdir = "0.3.7"
 anyhow = "1.0.70"
 ctrlc = { version = "3.2.5", features = ["termination"] }
+sys-mount = { git = "https://github.com/RRRadicalEdward/sys-mount.git", branch = "explicit_loopback" }
+
+[patch.crates-io.loopdev]
+git = "https://github.com/mulkieran/loopdev"
+branch = "bump-bindgen-reduce-version"
