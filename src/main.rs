@@ -13,6 +13,7 @@ mod error;
 mod fuse;
 mod inode;
 mod rfs;
+mod scanner;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]

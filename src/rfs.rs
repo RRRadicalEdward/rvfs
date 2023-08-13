@@ -10,18 +10,19 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use anyhow::Context;
+use clamav_rs::engine::ScanResult;
 use fuser::{FileAttr, FileType};
 use sys_mount::{Mount, Unmount, UnmountFlags};
 use tempdir::TempDir;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
-use crate::{error::FuseError, inode::Inode};
+use crate::{error::FuseError, inode::Inode, scanner::ClamAV};
 
 pub const FUSE_ROOT_INODE_ID: u64 = 1;
 
 type FuseResult<T> = Result<T, FuseError>;
 
-#[derive(Debug)]
 pub struct Rfs {
     pub(crate) inode_lists: BTreeMap<u64, Inode>,
     // sync access
@@ -29,10 +30,13 @@ pub struct Rfs {
     proxy_mount: PathBuf,
     origin_mount: TempDir,
     mount: Mount,
+    clamav: ClamAV,
 }
 
 impl Rfs {
     pub fn new(source: PathBuf, mount_point: PathBuf) -> anyhow::Result<Self> {
+        let clamav = ClamAV::new().with_context(|| "Failed to create ClamAV scanner")?;
+
         let file_name = source
             .file_name()
             .expect("mount point is expected to be valid Path")
@@ -51,6 +55,7 @@ impl Rfs {
             proxy_mount: mount_point,
             origin_mount,
             mount,
+            clamav,
         })
     }
 }
@@ -168,12 +173,29 @@ impl Rfs {
 
     fn insert_item(&mut self, item: PathBuf, parent_ino: u64) -> FuseResult<()> {
         let attr = self.stat(&item)?;
-        let proxy_path = self.origin_path_to_proxy_path(item);
+        let proxy_path = self.origin_path_to_proxy_path(&item);
         if !self
             .inode_lists
             .iter()
             .any(|entry| entry.1.parent_id == parent_ino && entry.1.path == proxy_path)
         {
+            match self.clamav.scan(&item) {
+                Ok(scan_result) => match scan_result {
+                    ScanResult::Clean => {}
+                    ScanResult::Whitelisted => {
+                        warn!("{item:?} is whitelisted")
+                    }
+                    ScanResult::Virus(_) => {
+                        error!("{item:?} is a virus!!!");
+                        return Err(FuseError::OPERATION_NOT_PERMITTED);
+                    }
+                },
+                Err(err) => {
+                    error!("Failed to scan {:?} file: {err}", item);
+                    return Err(FuseError::IO);
+                }
+            }
+
             let inode = self.last_ino_id.fetch_add(1, Ordering::Relaxed) + 1;
             trace!("Added {:?} item", proxy_path);
             self.inode_lists
@@ -192,9 +214,14 @@ impl Rfs {
         trace!("Adding folder: {:?}...", folder);
         for item in read_dir(folder).map_err(|_| FuseError::last())? {
             match item {
-                Ok(item) => {
-                    self.insert_item(item.path(), folder_ino)?;
-                }
+                Ok(item) => match self.insert_item(item.path(), folder_ino) {
+                    Ok(()) => {}
+                    Err(err) if err == FuseError::OPERATION_NOT_PERMITTED => {
+                        warn!("Operation is not permitted for {:?}", item.path());
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                },
                 Err(_) => {
                     return Err(FuseError::last());
                 }

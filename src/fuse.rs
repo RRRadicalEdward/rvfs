@@ -68,36 +68,58 @@ impl Filesystem for Rfs {
         reply.attr(&Duration::new(0, 0), &node.attr)
     }
 
-    fn create(
+    fn setattr(
         &mut self,
         _req: &Request<'_>,
-        parent: u64,
-        name: &OsStr,
-        mode: u32,
-        _umask: u32,
-        flags: i32,
-        reply: ReplyCreate,
+        ino: u64,
+        _mode: Option<u32>,
+        _uid: Option<u32>,
+        _gid: Option<u32>,
+        _size: Option<u64>,
+        atime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
+        ctime: Option<SystemTime>,
+        _fh: Option<u64>,
+        crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
+        _flags: Option<u32>,
+        reply: ReplyAttr,
     ) {
-        let _ = fuse_reply_error!(
-            self.find_by_id(parent),
+        let inode = fuse_reply_error!(
+            self.find_mut_by_id(ino),
             reply,
-            "Can't find inode with {} ino",
-            parent
+            "Cannot find inode with {} ino",
+            ino
         );
 
-        let (read, write) = match flags & libc::O_ACCMODE {
-            libc::O_RDONLY => (true, false),
-            libc::O_WRONLY => (false, true),
-            libc::O_RDWR => (true, true),
-            _ => {
-                reply.error(libc::EINVAL);
-                return;
-            }
-        };
+        if let Some(atime) = atime {
+            let time = match atime {
+                TimeOrNow::SpecificTime(time) => time,
+                TimeOrNow::Now => SystemTime::now(),
+            };
 
-        let attr = self.create(name, parent, mode).unwrap();
-        let fh = self.allocate_fh(attr.ino, read, write).unwrap();
-        reply.created(&Duration::from_secs(1), &attr, 0, fh, 0);
+            inode.attr.atime = time;
+        }
+
+        if let Some(mtime) = mtime {
+            let time = match mtime {
+                TimeOrNow::SpecificTime(time) => time,
+                TimeOrNow::Now => SystemTime::now(),
+            };
+
+            inode.attr.mtime = time;
+        }
+
+        if let Some(ctime) = ctime {
+            inode.attr.mtime = ctime;
+        }
+
+        if let Some(crtime) = crtime {
+            inode.attr.crtime = crtime;
+        }
+
+        reply.attr(&Duration::from_secs(1), &inode.attr)
     }
 
     #[tracing::instrument(skip(self))]
@@ -186,9 +208,9 @@ impl Filesystem for Rfs {
         fh: u64,
         offset: i64,
         data: &[u8],
-        write_flags: u32,
-        flags: i32,
-        lock_owner: Option<u64>,
+        _write_flags: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
         let inode = fuse_reply_error!(
@@ -325,57 +347,35 @@ impl Filesystem for Rfs {
         reply.ok();
     }
 
-    fn setattr(
+    fn create(
         &mut self,
         _req: &Request<'_>,
-        ino: u64,
-        _mode: Option<u32>,
-        _uid: Option<u32>,
-        _gid: Option<u32>,
-        _size: Option<u64>,
-        atime: Option<TimeOrNow>,
-        mtime: Option<TimeOrNow>,
-        ctime: Option<SystemTime>,
-        _fh: Option<u64>,
-        crtime: Option<SystemTime>,
-        _chgtime: Option<SystemTime>,
-        _bkuptime: Option<SystemTime>,
-        _flags: Option<u32>,
-        reply: ReplyAttr,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        _umask: u32,
+        flags: i32,
+        reply: ReplyCreate,
     ) {
-        let inode = fuse_reply_error!(
-            self.find_mut_by_id(ino),
+        let _ = fuse_reply_error!(
+            self.find_by_id(parent),
             reply,
-            "Cannot find inode with {} ino",
-            ino
+            "Can't find inode with {} ino",
+            parent
         );
 
-        if let Some(atime) = atime {
-            let time = match atime {
-                TimeOrNow::SpecificTime(time) => time,
-                TimeOrNow::Now => SystemTime::now(),
-            };
+        let (read, write) = match flags & libc::O_ACCMODE {
+            libc::O_RDONLY => (true, false),
+            libc::O_WRONLY => (false, true),
+            libc::O_RDWR => (true, true),
+            _ => {
+                reply.error(libc::EINVAL);
+                return;
+            }
+        };
 
-            inode.attr.atime = time;
-        }
-
-        if let Some(mtime) = mtime {
-            let time = match mtime {
-                TimeOrNow::SpecificTime(time) => time,
-                TimeOrNow::Now => SystemTime::now(),
-            };
-
-            inode.attr.mtime = time;
-        }
-
-        if let Some(ctime) = ctime {
-            inode.attr.mtime = ctime;
-        }
-
-        if let Some(crtime) = crtime {
-            inode.attr.crtime = crtime;
-        }
-
-        reply.attr(&Duration::from_secs(1), &inode.attr)
+        let attr = self.create(name, parent, mode).unwrap();
+        let fh = self.allocate_fh(attr.ino, read, write).unwrap();
+        reply.created(&Duration::from_secs(1), &attr, 0, fh, 0);
     }
 }
