@@ -24,7 +24,7 @@ pub const FUSE_ROOT_INODE_ID: u64 = 1;
 type FuseResult<T> = Result<T, FuseError>;
 
 pub struct Rfs {
-    pub(crate) inode_lists: BTreeMap<u64, Inode>,
+    inode_list: BTreeMap<u64, Inode>,
     // sync access
     last_ino_id: AtomicU64,
     proxy_mount: PathBuf,
@@ -50,7 +50,7 @@ impl Rfs {
             .mount(source, origin_mount.as_ref())?;
 
         Ok(Self {
-            inode_lists: BTreeMap::new(),
+            inode_list: BTreeMap::new(),
             last_ino_id: AtomicU64::new(0),
             proxy_mount: mount_point,
             origin_mount,
@@ -64,7 +64,7 @@ impl Rfs {
     pub fn init(&mut self) {
         let attr = self.stat(&self.origin_mount).unwrap();
 
-        self.inode_lists.insert(
+        self.inode_list.insert(
             FUSE_ROOT_INODE_ID,
             Inode::new(FUSE_ROOT_INODE_ID, self.proxy_mount.clone(), 0, attr),
         );
@@ -72,13 +72,13 @@ impl Rfs {
             .store(FUSE_ROOT_INODE_ID, Ordering::Relaxed);
 
         let id = self.last_ino_id.fetch_add(1, Ordering::Relaxed) + 1;
-        self.inode_lists.insert(
+        self.inode_list.insert(
             id,
             Inode::new(id, PathBuf::from("."), FUSE_ROOT_INODE_ID, attr),
         );
 
         let id = self.last_ino_id.fetch_add(1, Ordering::Relaxed) + 1;
-        self.inode_lists.insert(
+        self.inode_list.insert(
             id,
             Inode::new(id, PathBuf::from(".."), FUSE_ROOT_INODE_ID, attr),
         );
@@ -112,7 +112,7 @@ impl Rfs {
     }
 
     pub fn create(&mut self, name: &OsStr, parent_ino: u64, mode: u32) -> FuseResult<FileAttr> {
-        if self.inode_lists.iter().any(|entry| {
+        if self.inode_list.iter().any(|entry| {
             entry.1.parent_id == parent_ino
                 && entry.1.path.file_name().unwrap_or("..".as_ref()) == name
         }) {
@@ -157,7 +157,7 @@ impl Rfs {
             flags: 0,
         };
 
-        let _ = self.inode_lists.insert(
+        let _ = self.inode_list.insert(
             ino,
             Inode {
                 id: ino,
@@ -175,7 +175,7 @@ impl Rfs {
         let attr = self.stat(&item)?;
         let proxy_path = self.origin_path_to_proxy_path(&item);
         if !self
-            .inode_lists
+            .inode_list
             .iter()
             .any(|entry| entry.1.parent_id == parent_ino && entry.1.path == proxy_path)
         {
@@ -198,7 +198,7 @@ impl Rfs {
 
             let inode = self.last_ino_id.fetch_add(1, Ordering::Relaxed) + 1;
             trace!("Added {:?} item", proxy_path);
-            self.inode_lists
+            self.inode_list
                 .insert(inode, Inode::new(inode, proxy_path, parent_ino, attr));
         }
 
@@ -232,7 +232,7 @@ impl Rfs {
     }
 
     fn find_by_path<P: AsRef<Path>>(&self, path: P) -> FuseResult<&Inode> {
-        self.inode_lists
+        self.inode_list
             .iter()
             .find(|entry| entry.1.path == path.as_ref().as_os_str())
             .map(|(_, inode)| inode)
@@ -242,7 +242,7 @@ impl Rfs {
     pub fn find_by_name<P: AsRef<Path>>(&self, parent: P, name: P) -> FuseResult<&Inode> {
         let parent = self.find_by_path(parent)?;
 
-        self.inode_lists
+        self.inode_list
             .iter()
             .find(|entry| {
                 entry.1.parent_id == parent.id
@@ -254,7 +254,7 @@ impl Rfs {
     }
 
     pub fn find_by_id(&self, inode: u64) -> FuseResult<&Inode> {
-        self.inode_lists
+        self.inode_list
             .iter()
             .find(|(id, _)| **id == inode)
             .map(|(_, inode)| inode)
@@ -262,7 +262,7 @@ impl Rfs {
     }
 
     pub fn find_mut_by_id(&mut self, inode: u64) -> FuseResult<&mut Inode> {
-        self.inode_lists
+        self.inode_list
             .iter_mut()
             .find(|(id, _)| **id == inode)
             .map(|(_, inode)| inode)
@@ -314,6 +314,10 @@ impl Rfs {
         self.proxy_mount
             .as_path()
             .join(item.as_ref().strip_prefix(&self.origin_mount).unwrap())
+    }
+
+    pub fn inode_iter(&self) -> impl Iterator<Item = &Inode> {
+        self.inode_list.iter().map(|inode| inode.1)
     }
 }
 

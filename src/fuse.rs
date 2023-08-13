@@ -317,12 +317,11 @@ impl Filesystem for Rfs {
         );
 
         for (i, inode) in self
-            .inode_lists
-            .iter()
-            .filter(|(_, inode)| inode.parent_id == id)
+            .inode_iter()
+            .filter(|inode| inode.parent_id == id)
             .enumerate()
             .skip(offset as usize)
-            .map(|(i, item)| (i + 1, item.1))
+            .map(|(i, item)| (i + 1, item))
         {
             trace!("Replying readdir with: {:?}", inode.path);
             if reply.add(
