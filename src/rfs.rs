@@ -48,7 +48,6 @@ impl Rfs {
         let mount = Mount::builder()
             .explicit_loopback()
             .mount(source, origin_mount.as_ref())?;
-
         Ok(Self {
             inode_list: BTreeMap::new(),
             last_ino_id: AtomicU64::new(0),
