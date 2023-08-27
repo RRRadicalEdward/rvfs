@@ -10,14 +10,12 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use anyhow::Context;
-use clamav_rs::engine::ScanResult;
 use fuser::{FileAttr, FileType};
 use sys_mount::{Mount, Unmount, UnmountFlags};
 use tempdir::TempDir;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::{error::FuseError, inode::Inode, scanner::ClamAV};
+use crate::{error::FuseError, inode::Inode};
 
 pub const FUSE_ROOT_INODE_ID: u64 = 1;
 
@@ -30,12 +28,12 @@ pub struct Rfs {
     proxy_mount: PathBuf,
     origin_mount: TempDir,
     mount: Mount,
-    clamav: ClamAV,
+    //clamav: ClamAV,
 }
 
 impl Rfs {
     pub fn new(source: PathBuf, mount_point: PathBuf) -> anyhow::Result<Self> {
-        let clamav = ClamAV::new().with_context(|| "Failed to create ClamAV scanner")?;
+        //let clamav = ClamAV::new().with_context(|| "Failed to create ClamAV scanner")?; // it takes to long for xfstests. Create a seperate executable for ClamAV logic?
 
         let file_name = source
             .file_name()
@@ -54,7 +52,7 @@ impl Rfs {
             proxy_mount: mount_point,
             origin_mount,
             mount,
-            clamav,
+            //clamav,
         })
     }
 }
@@ -110,7 +108,13 @@ impl Rfs {
         })
     }
 
-    pub fn create(&mut self, name: &OsStr, parent_ino: u64, mode: u32) -> FuseResult<FileAttr> {
+    pub fn create(
+        &mut self,
+        name: &OsStr,
+        parent_ino: u64,
+        mode: u32,
+        kind: FileType,
+    ) -> FuseResult<FileAttr> {
         if self.inode_list.iter().any(|entry| {
             entry.1.parent_id == parent_ino
                 && entry.1.path.file_name().unwrap_or("..".as_ref()) == name
@@ -127,13 +131,26 @@ impl Rfs {
             return Err(FuseError::FILE_EXISTS);
         }
 
-        match File::create(&origin_path) {
-            Ok(_) => {}
-            Err(err) => {
-                error!("Failed to create {origin_path:?} file: {err}");
-                return Err(FuseError::last());
+        match kind {
+            FileType::RegularFile => {
+                if let Err(err) = File::create(&origin_path) {
+                    error!("Failed to create {origin_path:?} file: {err}");
+                    return Err(FuseError::last());
+                }
+            }
+            FileType::Directory => {
+                if let Err(err) = fs::create_dir(&origin_path) {
+                    error!("Failed to create {origin_path:?} directory: {err}");
+                    return Err(FuseError::last());
+                }
+            }
+            _ => {
+                error!("{kind:?} creating is not implemented!");
+                return Err(FuseError::NOT_IMPLEMENTED);
             }
         };
+
+        debug!("Created {path:?}({kind:?})");
 
         let ino = self.last_ino_id.fetch_add(1, Ordering::Relaxed) + 1;
         let now = SystemTime::now();
@@ -146,7 +163,7 @@ impl Rfs {
             mtime: now,
             ctime: now,
             crtime: now,
-            kind: FileType::RegularFile,
+            kind,
             perm: mode as u16,
             nlink: 0,
             uid: 0,
@@ -178,6 +195,7 @@ impl Rfs {
             .iter()
             .any(|entry| entry.1.parent_id == parent_ino && entry.1.path == proxy_path)
         {
+            /*
             match self.clamav.scan(&item) {
                 Ok(scan_result) => match scan_result {
                     ScanResult::Clean => {}
@@ -193,7 +211,7 @@ impl Rfs {
                     error!("Failed to scan {:?} file: {err}", item);
                     return Err(FuseError::IO);
                 }
-            }
+            } */
 
             let inode = self.last_ino_id.fetch_add(1, Ordering::Relaxed) + 1;
             trace!("Added {:?} item", proxy_path);
@@ -317,6 +335,27 @@ impl Rfs {
 
     pub fn inode_iter(&self) -> impl Iterator<Item = &Inode> {
         self.inode_list.iter().map(|inode| inode.1)
+    }
+
+    pub fn remove_by_inode_id(&mut self, id: u64) -> FuseResult<()> {
+        let inode = self.inode_list.remove(&id).ok_or(FuseError::NO_EXIST)?;
+        let origin_path = self.proxy_path_to_origin_path(inode.path);
+
+        match inode.attr.kind {
+            FileType::RegularFile => {
+                fs::remove_file(origin_path).map_err(|_| FuseError::last())?;
+            }
+            FileType::Directory => {
+                self.inode_list.retain(|_, v| v.parent_id != inode.id); // delete children
+                fs::remove_dir_all(origin_path).map_err(|_| FuseError::last())?;
+            }
+            other => {
+                error!("Remove is not implemented for {other:?}");
+                return Err(FuseError::NOT_IMPLEMENTED);
+            }
+        }
+
+        Ok(())
     }
 }
 

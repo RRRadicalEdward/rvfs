@@ -25,6 +25,8 @@ impl FuseError {
     pub const FILE_TOO_LARGE: Self = FuseError(libc::EFBIG);
     pub const ILLEGAL_SEEK: Self = FuseError(libc::ESPIPE);
     pub const READ_ONLY_FILE_SYSTEM: Self = FuseError(libc::EROFS);
+    pub const NOT_IMPLEMENTED: Self = FuseError(libc::ENOSYS);
+
     pub const DIRECTORY_NOT_EMPTY: Self = FuseError(libc::ENOTEMPTY);
 
     pub fn last() -> Self {
@@ -52,6 +54,7 @@ impl AsRef<str> for FuseError {
             FuseError::FILE_TOO_LARGE => "File too large",
             FuseError::ILLEGAL_SEEK => "Illegal seek",
             FuseError::READ_ONLY_FILE_SYSTEM => "Read-only file system",
+            FuseError::NOT_IMPLEMENTED => "Function is not implemented",
             FuseError::DIRECTORY_NOT_EMPTY => "Directory is not empty",
             _ => "UNKNOWN",
         }

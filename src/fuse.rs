@@ -8,13 +8,15 @@ use std::{
 };
 
 use fuser::{
-    Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
-    ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
+    FileType, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::c_int;
 use tracing::{debug, error, trace};
 
 use crate::{error::FuseError, rfs::Rfs};
+
+const DEFUALT_TTL: Duration = Duration::from_secs(1);
 
 macro_rules! fuse_reply_error {
     ($result:expr, $reply:ident, $fmt:literal, $($fmt_args: tt)*) => {
@@ -45,15 +47,14 @@ impl Filesystem for Rfs {
             parent
         );
 
-        let name = Path::new(name);
         let inode = fuse_reply_error!(
-            self.find_by_name(parent.path.as_path(), name),
+            self.find_by_name(parent.path.as_path(), Path::new(name)),
             reply,
             "Can't find item with {:?} name",
             name
         );
 
-        reply.entry(&Duration::from_secs(1), &inode.attr, 0);
+        reply.entry(&DEFUALT_TTL, &inode.attr, 0);
     }
 
     #[tracing::instrument(skip(self))]
@@ -119,7 +120,7 @@ impl Filesystem for Rfs {
             inode.attr.crtime = crtime;
         }
 
-        reply.attr(&Duration::from_secs(1), &inode.attr)
+        reply.attr(&DEFUALT_TTL, &inode.attr)
     }
 
     #[tracing::instrument(skip(self))]
@@ -373,8 +374,73 @@ impl Filesystem for Rfs {
             }
         };
 
-        let attr = self.create(name, parent, mode).unwrap();
+        let attr = self
+            .create(name, parent, mode, FileType::RegularFile)
+            .unwrap();
         let fh = self.allocate_fh(attr.ino, read, write).unwrap();
-        reply.created(&Duration::from_secs(1), &attr, 0, fh, 0);
+        reply.created(&DEFUALT_TTL, &attr, 0, fh, 0);
+    }
+
+    fn mkdir(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        _umask: u32,
+        reply: ReplyEntry,
+    ) {
+        let _ = fuse_reply_error!(
+            self.find_by_id(parent),
+            reply,
+            "Can't find inode with {} ino",
+            parent
+        );
+
+        let attr = self
+            .create(name, parent, mode, FileType::Directory)
+            .unwrap();
+        reply.entry(&DEFUALT_TTL, &attr, 0);
+    }
+
+    fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        let parent = fuse_reply_error!(
+            self.find_by_id(parent),
+            reply,
+            "Can't find parent inode with {} ino",
+            parent
+        );
+
+        let inode = fuse_reply_error!(
+            self.find_by_name(parent.path.as_path(), Path::new(name)),
+            reply,
+            "Can't find inode with {} parent and {:?} name",
+            parent.id,
+            name
+        );
+
+        if inode.attr.kind != FileType::Directory {
+            reply.error(FuseError::NOT_DIRECTORY.into());
+            return;
+        }
+
+        if self.inode_iter().filter(|inode|
+            //let filename = inode.path.file_name();
+            inode.parent_id == inode.id && inode.path.file_name().is_some() /* we only have it when filename is ".." */ && inode.path.file_name() != Some(".".as_ref())
+        ).count() != 0
+        {
+            reply.error(FuseError::DIRECTORY_NOT_EMPTY.into()); // We have to delete only empty folders
+            return;
+        }
+
+        let inode_id = inode.id;
+        fuse_reply_error!(
+            self.remove_by_inode_id(inode_id),
+            reply,
+            "Failed to remove {}",
+            inode_id
+        );
+
+        reply.ok()
     }
 }
