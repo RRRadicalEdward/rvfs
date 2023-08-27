@@ -1,9 +1,8 @@
-use std::sync::{Arc, Condvar, Mutex};
-
-use fuser::MountOption;
-use rfs::Rfs;
+use fuser::Session;
 use tracing::debug;
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::{fmt, EnvFilter};
+
+use rfs::Rfs;
 
 use crate::cli::Cli;
 
@@ -26,30 +25,16 @@ fn main() {
     debug!(?options, "Mount options");
 
     let proxy_file_system = Rfs::new(device.clone(), mountpoint.clone()).unwrap();
-    let session =
-        fuser::spawn_mount2(proxy_file_system
-                            , mountpoint, &options).expect("Fuse mount failed");
+    let mut session = Session::new(proxy_file_system, mountpoint.as_ref(), &options)
+        .expect("Failed to create FUSE session");
 
-    let conv_var = Arc::new((Mutex::new(false), Condvar::new()));
-    ctrlc::set_handler({
-        let conv_var = conv_var.clone();
-        move || {
-            let (mtx, conv_var) = &*conv_var;
-            let mut mtx = mtx.lock().unwrap();
-            *mtx = true;
-            conv_var.notify_one();
-        }
+    let mut umount = session.unmount_callable();
+    ctrlc::set_handler(move || {
+        umount.unmount().expect("Failed to unmount FUSE mount");
     })
-        .expect("Failed to set Ctrl-C handler");
+    .expect("Failed to set Ctrl-C handler");
 
-    let (mtx, conv_var) = &*conv_var;
-    let mut mtx = mtx.lock().unwrap();
-
-    while !*mtx {
-        mtx = conv_var.wait(mtx).unwrap();
-    }
-
-    session.join();
+    session.run().unwrap()
 }
 
 pub fn setup_logger() {
