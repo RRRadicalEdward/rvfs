@@ -256,13 +256,11 @@ impl Rfs {
             .ok_or(FuseError::NO_EXIST)
     }
 
-    pub fn find_by_name<P: AsRef<Path>>(&self, parent: P, name: P) -> FuseResult<&Inode> {
-        let parent = self.find_by_path(parent)?;
-
+    pub fn find_by_name<P: AsRef<Path>>(&self, parent: u64, name: P) -> FuseResult<&Inode> {
         self.inode_list
             .iter()
             .find(|entry| {
-                entry.1.parent_id == parent.id
+                entry.1.parent_id == parent
                     && entry.1.path.file_name().unwrap_or(OsStr::new(".."))
                         == name.as_ref().as_os_str()
             })
@@ -354,6 +352,33 @@ impl Rfs {
                 return Err(FuseError::NOT_IMPLEMENTED);
             }
         }
+
+        Ok(())
+    }
+
+    pub fn rename(
+        &mut self,
+        parent: u64,
+        name: &OsStr,
+        newparent: u64,
+        newname: &OsStr,
+    ) -> FuseResult<()> {
+        let new_path = match self.find_by_id(newparent) {
+            Ok(inode) => inode.path.join(newname),
+            Err(_) => {
+                error!("Can't find newparent inode {}", parent);
+                return Err(FuseError::INVALID_ARGUMENT);
+            }
+        };
+
+        let inode = self.find_by_name(parent, Path::new(name))?;
+        let old = self.proxy_path_to_origin_path(inode.path.as_path());
+        let new = self.proxy_path_to_origin_path(new_path.as_path());
+        fs::rename(old, new).map_err(|_| FuseError::last())?;
+
+        let inode = self.find_mut_by_id(inode.id)?;
+        inode.parent_id = newparent;
+        inode.path = new_path;
 
         Ok(())
     }

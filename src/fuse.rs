@@ -8,7 +8,7 @@ use std::{
 };
 
 use fuser::{
-    Filesystem, FileType, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    FileType, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::c_int;
@@ -40,15 +40,8 @@ impl Filesystem for Rfs {
 
     #[tracing::instrument(skip(self))]
     fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        let parent = fuse_reply_error!(
-            self.find_by_id(parent),
-            reply,
-            "Can't find parent inode with {} ino",
-            parent
-        );
-
         let inode = fuse_reply_error!(
-            self.find_by_name(parent.path.as_path(), Path::new(name)),
+            self.find_by_name(parent, Path::new(name)),
             reply,
             "Can't find item with {:?} name",
             name
@@ -146,18 +139,11 @@ impl Filesystem for Rfs {
     }
 
     fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        let parent = fuse_reply_error!(
-            self.find_by_id(parent),
-            reply,
-            "Can't find parent inode with {} ino",
-            parent
-        );
-
         let inode = fuse_reply_error!(
-            self.find_by_name(parent.path.as_path(), Path::new(name)),
+            self.find_by_name(parent, Path::new(name)),
             reply,
             "Can't find inode with {} parent and {:?} name",
-            parent.id,
+            parent,
             name
         );
 
@@ -445,18 +431,11 @@ impl Filesystem for Rfs {
     }
 
     fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        let parent = fuse_reply_error!(
-            self.find_by_id(parent),
-            reply,
-            "Can't find parent inode with {} ino",
-            parent
-        );
-
         let inode = fuse_reply_error!(
-            self.find_by_name(parent.path.as_path(), Path::new(name)),
+            self.find_by_name(parent, Path::new(name)),
             reply,
             "Can't find inode with {} parent and {:?} name",
-            parent.id,
+            parent,
             name
         );
 
@@ -471,6 +450,29 @@ impl Filesystem for Rfs {
             reply,
             "Failed to remove {}",
             inode_id
+        );
+
+        reply.ok()
+    }
+
+    fn rename(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        newparent: u64,
+        newname: &OsStr,
+        _flags: u32,
+        reply: ReplyEmpty,
+    ) {
+        fuse_reply_error!(
+            self.rename(parent, name, newparent, newname),
+            reply,
+            "Failed to rename item {:?} parent {} to newname {:?} newparent {}",
+            name,
+            parent,
+            newname,
+            newparent
         );
 
         reply.ok()
