@@ -337,7 +337,7 @@ impl Rfs {
         self.inode_list.iter().map(|inode| inode.1)
     }
 
-    pub fn remove_by_inode_id(&mut self, id: u64) -> FuseResult<()> {
+    pub fn remove(&mut self, id: u64) -> FuseResult<()> {
         let inode = self.inode_list.remove(&id).ok_or(FuseError::NO_EXIST)?;
         let origin_path = self.proxy_path_to_origin_path(inode.path);
 

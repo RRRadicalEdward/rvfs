@@ -8,7 +8,7 @@ use std::{
 };
 
 use fuser::{
-    FileType, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    Filesystem, FileType, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::c_int;
@@ -177,7 +177,7 @@ impl Filesystem for Rfs {
 
         let inode_id = inode.id;
         fuse_reply_error!(
-            self.remove_by_inode_id(inode_id),
+            self.remove(inode_id),
             reply,
             "Failed to remove {}",
             inode_id
@@ -442,5 +442,37 @@ impl Filesystem for Rfs {
             .unwrap();
         let fh = self.allocate_fh(attr.ino, read, write).unwrap();
         reply.created(&DEFUALT_TTL, &attr, 0, fh, 0);
+    }
+
+    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        let parent = fuse_reply_error!(
+            self.find_by_id(parent),
+            reply,
+            "Can't find parent inode with {} ino",
+            parent
+        );
+
+        let inode = fuse_reply_error!(
+            self.find_by_name(parent.path.as_path(), Path::new(name)),
+            reply,
+            "Can't find inode with {} parent and {:?} name",
+            parent.id,
+            name
+        );
+
+        if inode.attr.kind != FileType::RegularFile {
+            reply.error(FuseError::IS_DIRECTORY.into());
+            return;
+        }
+
+        let inode_id = inode.id;
+        fuse_reply_error!(
+            self.remove(inode_id),
+            reply,
+            "Failed to remove {}",
+            inode_id
+        );
+
+        reply.ok()
     }
 }
