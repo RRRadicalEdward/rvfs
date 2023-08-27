@@ -123,6 +123,69 @@ impl Filesystem for Rfs {
         reply.attr(&DEFUALT_TTL, &inode.attr)
     }
 
+    fn mkdir(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        _umask: u32,
+        reply: ReplyEntry,
+    ) {
+        let _ = fuse_reply_error!(
+            self.find_by_id(parent),
+            reply,
+            "Can't find inode with {} ino",
+            parent
+        );
+
+        let attr = self
+            .create(name, parent, mode, FileType::Directory)
+            .unwrap();
+        reply.entry(&DEFUALT_TTL, &attr, 0);
+    }
+
+    fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        let parent = fuse_reply_error!(
+            self.find_by_id(parent),
+            reply,
+            "Can't find parent inode with {} ino",
+            parent
+        );
+
+        let inode = fuse_reply_error!(
+            self.find_by_name(parent.path.as_path(), Path::new(name)),
+            reply,
+            "Can't find inode with {} parent and {:?} name",
+            parent.id,
+            name
+        );
+
+        if inode.attr.kind != FileType::Directory {
+            reply.error(FuseError::NOT_DIRECTORY.into());
+            return;
+        }
+
+        if self.inode_iter().filter(|inode|
+            //let filename = inode.path.file_name();
+            inode.parent_id == inode.id && inode.path.file_name().is_some() /* we only have it when filename is ".." */ && inode.path.file_name() != Some(".".as_ref())
+        ).count() != 0
+        {
+            reply.error(FuseError::DIRECTORY_NOT_EMPTY.into()); // We have to delete only empty folders
+            return;
+        }
+
+        let inode_id = inode.id;
+        fuse_reply_error!(
+            self.remove_by_inode_id(inode_id),
+            reply,
+            "Failed to remove {}",
+            inode_id
+        );
+
+        reply.ok()
+    }
+
     #[tracing::instrument(skip(self))]
     fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
         let (_, read, write) = match flags & libc::O_ACCMODE {
@@ -379,68 +442,5 @@ impl Filesystem for Rfs {
             .unwrap();
         let fh = self.allocate_fh(attr.ino, read, write).unwrap();
         reply.created(&DEFUALT_TTL, &attr, 0, fh, 0);
-    }
-
-    fn mkdir(
-        &mut self,
-        _req: &Request<'_>,
-        parent: u64,
-        name: &OsStr,
-        mode: u32,
-        _umask: u32,
-        reply: ReplyEntry,
-    ) {
-        let _ = fuse_reply_error!(
-            self.find_by_id(parent),
-            reply,
-            "Can't find inode with {} ino",
-            parent
-        );
-
-        let attr = self
-            .create(name, parent, mode, FileType::Directory)
-            .unwrap();
-        reply.entry(&DEFUALT_TTL, &attr, 0);
-    }
-
-    fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        let parent = fuse_reply_error!(
-            self.find_by_id(parent),
-            reply,
-            "Can't find parent inode with {} ino",
-            parent
-        );
-
-        let inode = fuse_reply_error!(
-            self.find_by_name(parent.path.as_path(), Path::new(name)),
-            reply,
-            "Can't find inode with {} parent and {:?} name",
-            parent.id,
-            name
-        );
-
-        if inode.attr.kind != FileType::Directory {
-            reply.error(FuseError::NOT_DIRECTORY.into());
-            return;
-        }
-
-        if self.inode_iter().filter(|inode|
-            //let filename = inode.path.file_name();
-            inode.parent_id == inode.id && inode.path.file_name().is_some() /* we only have it when filename is ".." */ && inode.path.file_name() != Some(".".as_ref())
-        ).count() != 0
-        {
-            reply.error(FuseError::DIRECTORY_NOT_EMPTY.into()); // We have to delete only empty folders
-            return;
-        }
-
-        let inode_id = inode.id;
-        fuse_reply_error!(
-            self.remove_by_inode_id(inode_id),
-            reply,
-            "Failed to remove {}",
-            inode_id
-        );
-
-        reply.ok()
     }
 }
