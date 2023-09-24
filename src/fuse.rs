@@ -1,14 +1,15 @@
 use std::{
     ffi::OsStr,
-    io::{Seek, SeekFrom, Write},
+    io::{Seek, SeekFrom},
+    io::Write,
     os::unix::fs::FileExt,
     path::Path,
-    sync::atomic::Ordering,
     time::{Duration, SystemTime},
 };
+use std::sync::atomic::Ordering;
 
 use fuser::{
-    FileType, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    Filesystem, FileType, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::c_int;
@@ -170,7 +171,7 @@ impl Filesystem for Rfs {
         };
 
         if self.inode_list().iter_read().filter(|inode|
-            inode.parent_id == ino && inode.path.file_name().is_some() /* we only have it when filename is ".." */ && inode.path.file_name() != Some(".".as_ref())
+            inode.parent_id == ino && inode.proxy_path.file_name().is_some() /* we only have it when filename is ".." */ && inode.proxy_path.file_name() != Some(".".as_ref())
         ).count() != 0
         {
             reply.error(FuseError::DIRECTORY_NOT_EMPTY.into()); // We have to delete only empty folders
@@ -278,23 +279,25 @@ impl Filesystem for Rfs {
         reply: ReplyWrite,
     ) {
         let read_view = self.inode_list();
+        let mut file = {
+            let inode_lock = fuse_reply_error!(
+                read_view.find_by_id(ino),
+                reply,
+                "Cannot find inode with {} ino",
+                ino
+            );
 
-        let inode_lock = fuse_reply_error!(
-            read_view.find_by_id(ino),
-            reply,
-            "Cannot find inode with {} ino",
-            ino
-        );
+            let inode = inode_lock.read().unwrap();
 
-        let inode = inode_lock.read().unwrap();
+            fuse_reply_error!(
+                self.open_file(&inode, fh, false, true),
+                reply,
+                "Failed to open file with {} and fh {}",
+                ino,
+                fh
+            )
+        };
 
-        let mut file = fuse_reply_error!(
-            self.open_file(&inode, fh, false, true),
-            reply,
-            "Failed to open file with {} and fh {}",
-            ino,
-            fh
-        );
         if offset > file.metadata().unwrap().len() as i64 {
             reply.error(FuseError::INVALID_ARGUMENT.into());
             return;
@@ -309,8 +312,8 @@ impl Filesystem for Rfs {
             }
         }
 
-        match file.write_all(data) {
-            Ok(()) => {}
+        let written = match file.write(data) {
+            Ok(written) => written,
             Err(err) => {
                 error!("Failed to write data to file with {ino} inode: {err}");
                 reply.error(FuseError::last().into());
@@ -319,6 +322,7 @@ impl Filesystem for Rfs {
         };
 
         let inode_lock = read_view.find_by_id(ino).unwrap();
+
         let mut inode = inode_lock.write().unwrap();
 
         let attr = &mut inode.attr;
@@ -329,7 +333,7 @@ impl Filesystem for Rfs {
         attr.ctime = SystemTime::now();
         attr.mtime = SystemTime::now();
 
-        reply.written(data.len() as u32)
+        reply.written(written as u32)
     }
 
     #[tracing::instrument(skip(self))]
@@ -371,7 +375,7 @@ impl Filesystem for Rfs {
             );
 
             let inode = inode_lock.read().unwrap();
-            (inode.path.clone(), inode.attr.ino)
+            (inode.proxy_path.clone(), inode.attr.ino)
         };
 
         self.add_folder(dir).unwrap();
@@ -407,12 +411,12 @@ impl Filesystem for Rfs {
             .skip(offset as usize)
             .map(|(i, item)| (i + 1, item))
         {
-            trace!("Replying readdir with: {:?}", inode.path);
+            trace!("Replying readdir with: {:?}", inode.proxy_path);
             if reply.add(
                 inode.attr.ino,
                 i as i64,
                 inode.attr.kind,
-                inode.path.file_name().unwrap_or("..".as_ref()),
+                inode.proxy_path.file_name().unwrap_or("..".as_ref()),
             ) {
                 break;
             }

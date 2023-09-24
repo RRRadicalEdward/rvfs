@@ -124,16 +124,18 @@ impl FileAttrBuilder {
 
 #[derive(Debug)]
 pub struct Inode {
-    pub path: PathBuf,
+    pub proxy_path: PathBuf,
+    pub origin_path: PathBuf,
     pub parent_id: u64,
     pub attr: FileAttr,
     pub open_handles: AtomicU64,
 }
 
 impl Inode {
-    pub fn new(path: PathBuf, parent_id: u64, attr: FileAttr) -> Self {
+    pub fn new(path: PathBuf, origin_path: PathBuf, parent_id: u64, attr: FileAttr) -> Self {
         Inode {
-            path,
+            proxy_path: path,
+            origin_path,
             parent_id,
             attr,
             open_handles: AtomicU64::new(0),
