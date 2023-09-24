@@ -1,6 +1,6 @@
 use fuser::Session;
 use tracing::debug;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 use rfs::Rfs;
 
@@ -32,7 +32,7 @@ fn main() {
     ctrlc::set_handler(move || {
         umount.unmount().expect("Failed to unmount FUSE mount");
     })
-    .expect("Failed to set Ctrl-C handler");
+        .expect("Failed to set Ctrl-C handler");
 
     session.run().unwrap()
 }
@@ -48,7 +48,12 @@ pub fn setup_logger() {
         .with_line_number(true)
         .pretty();
 
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("trace"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_|
+        if cfg!(debug_assertions) {
+            EnvFilter::new("trace")
+        } else {
+            EnvFilter::new("info")
+        });
 
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)

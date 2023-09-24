@@ -265,7 +265,6 @@ impl Filesystem for Rfs {
         reply.data(&buf)
     }
 
-    #[tracing::instrument(skip(self))]
     fn write(
         &mut self,
         _req: &Request<'_>,
