@@ -1,15 +1,14 @@
 use std::{
     ffi::OsStr,
-    io::{Seek, SeekFrom},
-    io::Write,
+    io::{Seek, SeekFrom, Write},
     os::unix::fs::FileExt,
     path::Path,
+    sync::atomic::Ordering,
     time::{Duration, SystemTime},
 };
-use std::sync::atomic::Ordering;
 
 use fuser::{
-    Filesystem, FileType, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    FileType, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::c_int;
