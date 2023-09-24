@@ -1,5 +1,5 @@
+use std::collections::HashMap;
 use std::{
-    collections::BTreeMap,
     ffi::OsStr,
     fs,
     fs::{read_dir, File},
@@ -26,7 +26,7 @@ use crate::{
 type FuseResult<T> = Result<T, FuseError>;
 
 struct InodeList {
-    list: RwLock<BTreeMap<u64, RwLock<Inode>>>,
+    list: RwLock<HashMap<u64, RwLock<Inode>>>,
 }
 
 impl InodeList {
@@ -61,7 +61,7 @@ impl InodeList {
     }
 }
 
-pub struct InodeListReadView<'a>(RwLockReadGuard<'a, BTreeMap<u64, RwLock<Inode>>>);
+pub struct InodeListReadView<'a>(RwLockReadGuard<'a, HashMap<u64, RwLock<Inode>>>);
 
 impl<'a> InodeListReadView<'a> {
     pub(crate) fn iter_read(&'a self) -> impl Iterator<Item = RwLockReadGuard<'a, Inode>> {
@@ -109,7 +109,7 @@ impl<'a> InodeListReadView<'a> {
     }
 }
 
-struct InodeListWriteView<'a>(RwLockWriteGuard<'a, BTreeMap<u64, RwLock<Inode>>>);
+struct InodeListWriteView<'a>(RwLockWriteGuard<'a, HashMap<u64, RwLock<Inode>>>);
 
 pub struct Rfs {
     inode_list: InodeList,
@@ -136,7 +136,7 @@ impl Rfs {
             .mount(source, origin_mount.as_ref())?;
         Ok(Self {
             inode_list: InodeList {
-                list: RwLock::new(BTreeMap::new()),
+                list: RwLock::new(HashMap::new()),
             },
             proxy_mount: mount_point,
             origin_mount,
@@ -211,7 +211,6 @@ impl Rfs {
         mode: u32,
         kind: FileType,
     ) -> FuseResult<FileAttr> {
-        info!("create");
         let (proxy_path, origin_path) = {
             let read_view = self.inode_list.read_view();
 
