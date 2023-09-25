@@ -11,7 +11,7 @@ use fuser::{
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::c_int;
-use tracing::{debug, error, trace};
+use log::{debug, error, trace};
 
 use crate::{error::FuseError, rfs::Rfs};
 
@@ -37,7 +37,6 @@ impl Filesystem for Rfs {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self))]
     fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let read_view = self.inode_list();
 
@@ -53,7 +52,6 @@ impl Filesystem for Rfs {
         reply.entry(&DEFUALT_TTL, &inode.attr, 0);
     }
 
-    #[tracing::instrument(skip(self))]
     fn getattr(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyAttr) {
         let read_view = self.inode_list();
 
@@ -181,7 +179,6 @@ impl Filesystem for Rfs {
         reply.ok()
     }
 
-    #[tracing::instrument(skip(self))]
     fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
         let (_, read, write) = match flags & libc::O_ACCMODE {
             libc::O_RDONLY => (libc::R_OK, true, false),
@@ -333,7 +330,6 @@ impl Filesystem for Rfs {
         reply.written(written as u32)
     }
 
-    #[tracing::instrument(skip(self))]
     fn release(
         &mut self,
         _req: &Request<'_>,
@@ -365,7 +361,6 @@ impl Filesystem for Rfs {
         reply.ok()
     }
 
-    #[tracing::instrument(skip(self))]
     fn opendir(&mut self, _req: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
         let (dir, id) = {
             let read_view = self.inode_list();
@@ -386,7 +381,6 @@ impl Filesystem for Rfs {
         reply.opened(id, 0);
     }
 
-    #[tracing::instrument(skip(self))]
     fn readdir(
         &mut self,
         _req: &Request<'_>,

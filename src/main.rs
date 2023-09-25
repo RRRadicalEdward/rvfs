@@ -1,8 +1,8 @@
 use fuser::Session;
-use tracing::debug;
-use tracing_subscriber::{fmt, EnvFilter};
+use simplelog::{Config, LevelFilter, SimpleLogger};
 
 use rfs::Rfs;
+use log::debug;
 
 use crate::cli::Cli;
 
@@ -22,7 +22,7 @@ fn main() {
 
     setup_logger();
 
-    debug!(?options, "Mount options");
+    debug!("Mount options: {options:?}");
 
     let proxy_file_system = Rfs::new(device.clone(), mountpoint.clone()).unwrap();
     let mut session = Session::new(proxy_file_system, mountpoint.as_ref(), &options)
@@ -32,32 +32,17 @@ fn main() {
     ctrlc::set_handler(move || {
         umount.unmount().expect("Failed to unmount FUSE mount");
     })
-    .expect("Failed to set Ctrl-C handler");
+        .expect("Failed to set Ctrl-C handler");
 
     session.run().unwrap()
 }
 
 pub fn setup_logger() {
-    let format = fmt::format()
-        .with_ansi(true)
-        .with_level(true)
-        .with_target(false)
-        .with_thread_ids(true)
-        .with_thread_names(true)
-        .with_source_location(true)
-        .with_line_number(true)
-        .pretty();
+    let log_level = if cfg!(debug_assertions) {
+        LevelFilter::Trace
+    } else {
+        LevelFilter::Info
+    };
 
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        if cfg!(debug_assertions) {
-            EnvFilter::new("trace")
-        } else {
-            EnvFilter::new("info")
-        }
-    });
-
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .event_format(format)
-        .init();
+    SimpleLogger::init(log_level, Config::default()).expect("Failed to setup logger");
 }

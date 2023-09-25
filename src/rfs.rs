@@ -19,7 +19,7 @@ use clamav_rs::engine::ScanResult;
 use fuser::{FileAttr, FileType};
 use sys_mount::{Mount, Unmount, UnmountFlags};
 use tempdir::TempDir;
-use tracing::{debug, error, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 
 use crate::{
     error::FuseError,
