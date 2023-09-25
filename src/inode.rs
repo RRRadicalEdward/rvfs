@@ -1,4 +1,9 @@
-use std::{path::PathBuf, sync::atomic::AtomicU64, time::SystemTime};
+use std::{
+    fs::File,
+    os::fd::{FromRawFd, RawFd},
+    path::PathBuf,
+    time::SystemTime,
+};
 
 use fuser::{FileAttr, FileType};
 
@@ -123,12 +128,24 @@ impl FileAttrBuilder {
 }
 
 #[derive(Debug)]
+pub struct OpenedHandlers {
+    pub fh: RawFd,
+    pub count: u64,
+}
+
+impl Drop for OpenedHandlers {
+    fn drop(&mut self) {
+        drop(unsafe { File::from_raw_fd(self.fh) });
+    }
+}
+
+#[derive(Debug)]
 pub struct Inode {
     pub proxy_path: PathBuf,
     pub origin_path: PathBuf,
     pub parent_id: u64,
     pub attr: FileAttr,
-    pub open_handles: AtomicU64,
+    pub open_handles: Option<OpenedHandlers>,
 }
 
 impl Inode {
@@ -138,7 +155,7 @@ impl Inode {
             origin_path,
             parent_id,
             attr,
-            open_handles: AtomicU64::new(0),
+            open_handles: None,
         }
     }
 }

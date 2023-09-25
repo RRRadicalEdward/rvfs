@@ -29,6 +29,8 @@ impl FuseError {
 
     pub const DIRECTORY_NOT_EMPTY: Self = FuseError(libc::ENOTEMPTY);
 
+    pub const BAD_FD: Self = FuseError(libc::EBADF);
+
     pub fn last() -> Self {
         let error = io::Error::last_os_error();
         Self(error.raw_os_error().unwrap())

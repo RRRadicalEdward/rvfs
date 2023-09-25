@@ -3,7 +3,6 @@ use std::{
     io::{Seek, SeekFrom, Write},
     os::unix::fs::FileExt,
     path::Path,
-    sync::atomic::Ordering,
     time::{Duration, SystemTime},
 };
 
@@ -354,8 +353,14 @@ impl Filesystem for Rfs {
             ino
         );
 
-        let inode = inode_lock.write().unwrap();
-        inode.open_handles.fetch_min(1, Ordering::Relaxed);
+        let mut inode = inode_lock.write().unwrap();
+        if let Some(open_handlers) = inode.open_handles.as_mut() {
+            open_handlers.count = open_handlers.count.saturating_sub(1);
+
+            if open_handlers.count == 0 {
+                inode.open_handles = None;
+            }
+        }
 
         reply.ok()
     }

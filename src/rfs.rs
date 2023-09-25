@@ -1,12 +1,16 @@
-use std::collections::HashMap;
 use std::{
+    collections::HashMap,
     ffi::OsStr,
     fs,
     fs::{read_dir, File},
+    mem::ManuallyDrop,
     ops::Add,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::{
+        fd::{FromRawFd, IntoRawFd},
+        unix::fs::{MetadataExt, PermissionsExt},
+    },
     path::{Path, PathBuf},
-    sync::{atomic::Ordering, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
     time::{Duration, SystemTime},
 };
 
@@ -19,7 +23,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     error::FuseError,
-    inode::{FileAttrBuilder, Inode},
+    inode::{FileAttrBuilder, Inode, OpenedHandlers},
     scanner::ClamAV,
 };
 
@@ -330,15 +334,45 @@ impl Rfs {
     pub fn allocate_fh(&mut self, inode: u64, read: bool, write: bool) -> FuseResult<u64> {
         let read_view = self.inode_list.read_view();
         let inode_lock = read_view.find_by_id(inode)?;
-        let inode = inode_lock.write().unwrap();
+        let mut inode = inode_lock.write().unwrap();
 
-        let mut fh = inode.open_handles.fetch_add(1, Ordering::Relaxed) + 1;
-        fh = (fh << 2) | u64::from(read) | (u64::from(write) << 1);
+        let count = if let Some(open_handlers) = inode.open_handles.as_mut() {
+            open_handlers.count += 1;
+
+            open_handlers.count
+        } else {
+            let file = match File::options()
+                .read(read)
+                .write(write)
+                .open(&inode.origin_path)
+            {
+                Ok(file) => file,
+                Err(err) => {
+                    error!("Failed to open {:?}: {err}", inode.origin_path);
+                    return Err(FuseError::last());
+                }
+            };
+
+            inode.open_handles = Some(OpenedHandlers {
+                fh: file.into_raw_fd(),
+                count: 1,
+            });
+
+            1
+        };
+
+        let fh = (count << 2) | u64::from(read) | (u64::from(write) << 1);
 
         Ok(fh)
     }
 
-    pub fn open_file(&self, node: &Inode, fh: u64, read: bool, write: bool) -> FuseResult<File> {
+    pub fn open_file(
+        &self,
+        node: &Inode,
+        fh: u64,
+        read: bool,
+        write: bool,
+    ) -> FuseResult<ManuallyDrop<File>> {
         if read && !fn_check_access_read(fh) {
             error!("Read is not allowed!");
             return Err(FuseError::OPERATION_NOT_PERMITTED);
@@ -349,19 +383,11 @@ impl Rfs {
             return Err(FuseError::OPERATION_NOT_PERMITTED);
         }
 
-        let file = match File::options()
-            .read(read)
-            .write(write)
-            .open(&node.origin_path)
-        {
-            Ok(file) => file,
-            Err(err) => {
-                error!("Failed to open {:?}: {err}", node.origin_path);
-                return Err(FuseError::last());
-            }
-        };
+        let open_handlers = node.open_handles.as_ref().ok_or(FuseError::BAD_FD)?;
 
-        Ok(file)
+        Ok(ManuallyDrop::new(unsafe {
+            File::from_raw_fd(open_handlers.fh)
+        }))
     }
 
     fn proxy_path_to_origin_path<P: AsRef<Path>>(&self, item: P) -> PathBuf {
