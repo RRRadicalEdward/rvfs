@@ -1,8 +1,8 @@
 use fuser::Session;
 use simplelog::{Config, LevelFilter, SimpleLogger};
 
-use rfs::Rfs;
 use log::debug;
+use rfs::Rfs;
 
 use crate::cli::Cli;
 
@@ -32,7 +32,7 @@ fn main() {
     ctrlc::set_handler(move || {
         umount.unmount().expect("Failed to unmount FUSE mount");
     })
-        .expect("Failed to set Ctrl-C handler");
+    .expect("Failed to set Ctrl-C handler");
 
     session.run().unwrap()
 }

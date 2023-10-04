@@ -1,13 +1,13 @@
 use std::{
     ffi::OsStr,
     io::{Seek, SeekFrom, Write},
+    os::unix::fs::FileExt,
     path::Path,
     time::{Duration, SystemTime},
 };
-use std::os::unix::fs::FileExt;
 
 use fuser::{
-    Filesystem, FileType, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    FileType, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::c_int;
@@ -144,6 +144,33 @@ impl Filesystem for Rfs {
         reply.entry(&DEFUALT_TTL, &attr, 0);
     }
 
+    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        let ino = {
+            let read_view = self.inode_list();
+
+            let inode_lock = fuse_reply_error!(
+                read_view.find_by_name(parent, Path::new(name)),
+                reply,
+                "Can't find inode with {} parent and {:?} name",
+                parent,
+                name
+            );
+
+            let inode = inode_lock.read().unwrap();
+
+            if inode.attr.kind != FileType::RegularFile {
+                reply.error(FuseError::IS_DIRECTORY.into());
+                return;
+            }
+
+            inode.attr.ino
+        };
+
+        fuse_reply_error!(self.remove(ino), reply, "Failed to remove {}", ino);
+
+        reply.ok()
+    }
+
     fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let ino = {
             let read_view = self.inode_list();
@@ -175,6 +202,29 @@ impl Filesystem for Rfs {
         }
 
         fuse_reply_error!(self.remove(ino), reply, "Failed to remove {}", ino);
+
+        reply.ok()
+    }
+
+    fn rename(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        newparent: u64,
+        newname: &OsStr,
+        _flags: u32,
+        reply: ReplyEmpty,
+    ) {
+        fuse_reply_error!(
+            self.rename(parent, name, newparent, newname),
+            reply,
+            "Failed to rename item {:?} parent {} to newname {:?} newparent {}",
+            name,
+            parent,
+            newname,
+            newparent
+        );
 
         reply.ok()
     }
@@ -449,55 +499,5 @@ impl Filesystem for Rfs {
 
         let fh = self.allocate_fh(attr.ino, read, write).unwrap();
         reply.created(&DEFUALT_TTL, &attr, 0, fh, 0);
-    }
-
-    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        let ino = {
-            let read_view = self.inode_list();
-
-            let inode_lock = fuse_reply_error!(
-                read_view.find_by_name(parent, Path::new(name)),
-                reply,
-                "Can't find inode with {} parent and {:?} name",
-                parent,
-                name
-            );
-
-            let inode = inode_lock.read().unwrap();
-
-            if inode.attr.kind != FileType::RegularFile {
-                reply.error(FuseError::IS_DIRECTORY.into());
-                return;
-            }
-
-            inode.attr.ino
-        };
-
-        fuse_reply_error!(self.remove(ino), reply, "Failed to remove {}", ino);
-
-        reply.ok()
-    }
-
-    fn rename(
-        &mut self,
-        _req: &Request<'_>,
-        parent: u64,
-        name: &OsStr,
-        newparent: u64,
-        newname: &OsStr,
-        _flags: u32,
-        reply: ReplyEmpty,
-    ) {
-        fuse_reply_error!(
-            self.rename(parent, name, newparent, newname),
-            reply,
-            "Failed to rename item {:?} parent {} to newname {:?} newparent {}",
-            name,
-            parent,
-            newname,
-            newparent
-        );
-
-        reply.ok()
     }
 }

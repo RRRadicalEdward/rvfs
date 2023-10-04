@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     ffi::OsStr,
     fs,
-    fs::{File, read_dir},
+    fs::{read_dir, File},
     mem::ManuallyDrop,
     ops::Add,
     os::{
@@ -68,7 +68,7 @@ impl InodeList {
 pub struct InodeListReadView<'a>(RwLockReadGuard<'a, HashMap<u64, RwLock<Inode>>>);
 
 impl<'a> InodeListReadView<'a> {
-    pub(crate) fn iter_read(&'a self) -> impl Iterator<Item=RwLockReadGuard<'a, Inode>> {
+    pub(crate) fn iter_read(&'a self) -> impl Iterator<Item = RwLockReadGuard<'a, Inode>> {
         self.0.iter().map(|(_, entry)| entry.read().unwrap())
     }
     fn find_by_path<P: AsRef<Path>>(&'a self, path: P) -> FuseResult<&'a RwLock<Inode>> {
@@ -94,7 +94,7 @@ impl<'a> InodeListReadView<'a> {
 
                 node.parent_id == parent
                     && node.proxy_path.file_name().unwrap_or(OsStr::new(".."))
-                    == name.as_ref().as_os_str()
+                        == name.as_ref().as_os_str()
             })
             .map(|(_, inode)| inode)
             .ok_or(FuseError::NO_EXIST)
