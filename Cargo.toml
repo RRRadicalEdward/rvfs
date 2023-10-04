@@ -10,7 +10,7 @@ name = "rvfs"
 path = "src/main.rs"
 
 [dependencies]
-fuser = "0.13.0"
+fuser = { git = "https://github.com/RRRadicalEdward/fuser", branch = "optimizations" }
 simplelog = "0.12.1"
 log = "0.4.20"
 libc = "0.2"

@@ -247,8 +247,7 @@ checksum = "a06f77d526c1a601b7c4cdd98f54b5eaabffc14d5f2f0296febdc7f357c6d3ba"
 [[package]]
 name = "fuser"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21370f84640642c8ea36dfb2a6bfc4c55941f476fcf431f6fef25a5ddcf0169b"
+source = "git+https://github.com/RRRadicalEdward/fuser?branch=optimizations#977075e20a041ac49e9ded787774534bc2bc590b"
 dependencies = [
  "libc",
  "log",

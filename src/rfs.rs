@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     ffi::OsStr,
     fs,
-    fs::{read_dir, File},
+    fs::{File, read_dir},
     mem::ManuallyDrop,
     ops::Add,
     os::{
@@ -17,9 +17,9 @@ use std::{
 use anyhow::Context;
 use clamav_rs::engine::ScanResult;
 use fuser::{FileAttr, FileType};
+use log::{debug, error, info, trace, warn};
 use sys_mount::{Mount, Unmount, UnmountFlags};
 use tempdir::TempDir;
-use log::{debug, error, info, trace, warn};
 
 use crate::{
     error::FuseError,
@@ -68,7 +68,7 @@ impl InodeList {
 pub struct InodeListReadView<'a>(RwLockReadGuard<'a, HashMap<u64, RwLock<Inode>>>);
 
 impl<'a> InodeListReadView<'a> {
-    pub(crate) fn iter_read(&'a self) -> impl Iterator<Item = RwLockReadGuard<'a, Inode>> {
+    pub(crate) fn iter_read(&'a self) -> impl Iterator<Item=RwLockReadGuard<'a, Inode>> {
         self.0.iter().map(|(_, entry)| entry.read().unwrap())
     }
     fn find_by_path<P: AsRef<Path>>(&'a self, path: P) -> FuseResult<&'a RwLock<Inode>> {
@@ -94,7 +94,7 @@ impl<'a> InodeListReadView<'a> {
 
                 node.parent_id == parent
                     && node.proxy_path.file_name().unwrap_or(OsStr::new(".."))
-                        == name.as_ref().as_os_str()
+                    == name.as_ref().as_os_str()
             })
             .map(|(_, inode)| inode)
             .ok_or(FuseError::NO_EXIST)
@@ -263,22 +263,7 @@ impl Rfs {
     }
 
     fn insert_item(&mut self, item: PathBuf, parent_ino: u64) -> FuseResult<()> {
-        let proxy_path = {
-            let proxy_path = self.origin_path_to_proxy_path(&item);
-
-            let read_view = self.inode_list.read_view();
-            if read_view
-                .iter_read()
-                .any(|node| node.parent_id == parent_ino && node.proxy_path == proxy_path)
-            {
-                return Ok(());
-            }
-
-            proxy_path
-        };
-
-        let attr = self.stat(&item)?;
-
+        let proxy_path = self.origin_path_to_proxy_path(&item);
         match self.clamav.scan(&item) {
             Ok(scan_result) => match scan_result {
                 ScanResult::Clean => {}
@@ -296,25 +281,19 @@ impl Rfs {
             }
         }
 
+        let attr = self.stat(&item)?;
+
         trace!("Added {:?} item", proxy_path);
         self.inode_list.insert(proxy_path, item, parent_ino, attr);
 
         Ok(())
     }
 
-    pub fn add_folder<P: AsRef<Path>>(&mut self, folder: P) -> FuseResult<()> {
-        let folder_ino = {
-            let read_view = self.inode_list.read_view();
-            let inode_lock = read_view.find_by_path(&folder)?;
-            let inode = inode_lock.read().unwrap();
-            inode.attr.ino
-        };
-
-        let folder = self.proxy_path_to_origin_path(folder);
-        trace!("Adding folder: {:?}...", folder);
+    pub fn add_folder<P: AsRef<Path>>(&mut self, folder: P, ino: u64) -> FuseResult<()> {
+        trace!("Adding folder: {:?}...", folder.as_ref());
         for item in read_dir(folder).map_err(|_| FuseError::last())? {
             match item {
-                Ok(item) => match self.insert_item(item.path(), folder_ino) {
+                Ok(item) => match self.insert_item(item.path(), ino) {
                     Ok(()) => {}
                     Err(err) if err == FuseError::OPERATION_NOT_PERMITTED => {
                         warn!("Operation is not permitted for {:?}", item.path());

@@ -1,13 +1,13 @@
 use std::{
     ffi::OsStr,
     io::{Seek, SeekFrom, Write},
-    os::unix::fs::FileExt,
     path::Path,
     time::{Duration, SystemTime},
 };
+use std::os::unix::fs::FileExt;
 
 use fuser::{
-    FileType, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    Filesystem, FileType, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::c_int;
@@ -232,18 +232,9 @@ impl Filesystem for Rfs {
             fh
         );
 
-        let len = match file.metadata() {
-            Ok(meta) => meta.len(),
-            Err(err) => {
-                error!("Failed to get metadata: {err}");
-                reply.error(FuseError::last().into());
-                return;
-            }
-        };
-
         let offset = u64::try_from(offset).unwrap();
         let amount = usize::min(
-            usize::try_from(len.saturating_sub(offset)).unwrap(),
+            usize::try_from(inode.attr.size.saturating_sub(offset)).unwrap(),
             usize::try_from(size).unwrap(),
         );
         let mut buf = vec![0; amount];
@@ -292,11 +283,6 @@ impl Filesystem for Rfs {
             )
         };
 
-        if offset > file.metadata().unwrap().len() as i64 {
-            reply.error(FuseError::INVALID_ARGUMENT.into());
-            return;
-        }
-
         match file.seek(SeekFrom::Start(offset as u64)) {
             Ok(_) => {}
             Err(err) => {
@@ -324,8 +310,9 @@ impl Filesystem for Rfs {
             attr.size = (data.len() + offset as usize) as u64;
         }
 
-        attr.ctime = SystemTime::now();
-        attr.mtime = SystemTime::now();
+        let time_now = SystemTime::now();
+        attr.ctime = time_now;
+        attr.mtime = time_now;
 
         reply.written(written as u32)
     }
@@ -373,10 +360,10 @@ impl Filesystem for Rfs {
             );
 
             let inode = inode_lock.read().unwrap();
-            (inode.proxy_path.clone(), inode.attr.ino)
+            (inode.origin_path.clone(), inode.attr.ino)
         };
 
-        self.add_folder(dir).unwrap();
+        self.add_folder(dir, id).unwrap();
 
         reply.opened(id, 0);
     }
