@@ -1,5 +1,5 @@
+use std::fs::DirEntry;
 use std::{
-    collections::HashMap,
     ffi::OsStr,
     fs,
     fs::{read_dir, File},
@@ -18,6 +18,7 @@ use anyhow::Context;
 use clamav_rs::engine::ScanResult;
 use fuser::{FileAttr, FileType};
 use log::{debug, error, info, trace, warn};
+use petgraph::{prelude::*, visit::Walker, Graph};
 use sys_mount::{Mount, Unmount, UnmountFlags};
 use tempdir::TempDir;
 
@@ -29,94 +30,95 @@ use crate::{
 
 type FuseResult<T> = Result<T, FuseError>;
 
-struct InodeList {
-    list: RwLock<HashMap<u64, RwLock<Inode>>>,
+#[derive(Default)]
+pub struct InodeList {
+    list: Graph<Inode, ()>,
 }
 
 impl InodeList {
-    fn insert(
-        &mut self,
-        path: PathBuf,
-        origin_path: PathBuf,
-        parent_id: u64,
-        attr: FileAttrBuilder,
-    ) -> u64 {
-        let mut list = self.list.write().unwrap();
-        let id = u64::try_from(list.len() + 1).unwrap();
-        list.insert(
-            id,
-            RwLock::new(Inode::new(
-                path,
-                origin_path,
-                parent_id,
-                attr.with_ino(id).build(),
-            )),
-        );
+    fn insert(&mut self, mut node: Inode, parent_node: NodeIndex) -> FileAttr {
+        let node_id = self.list.node_count() as u64 + 1;
+        node.attr.ino = node_id;
+        let attr = node.attr;
+        let node = self.list.add_node(node);
 
-        id
+        self.list.add_edge(parent_node, node, ());
+        attr
     }
 
-    fn read_view(&self) -> InodeListReadView {
-        InodeListReadView(self.list.read().unwrap())
-    }
-
-    fn write_view(&self) -> InodeListWriteView {
-        InodeListWriteView(self.list.write().unwrap())
-    }
-}
-
-pub struct InodeListReadView<'a>(RwLockReadGuard<'a, HashMap<u64, RwLock<Inode>>>);
-
-impl<'a> InodeListReadView<'a> {
-    pub(crate) fn iter_read(&'a self) -> impl Iterator<Item = RwLockReadGuard<'a, Inode>> {
-        self.0.iter().map(|(_, entry)| entry.read().unwrap())
-    }
-    fn find_by_path<P: AsRef<Path>>(&'a self, path: P) -> FuseResult<&'a RwLock<Inode>> {
-        self.0
-            .iter()
-            .find(|(_, node)| {
-                let node = node.read().unwrap();
-                node.proxy_path == path.as_ref().as_os_str()
-            })
-            .map(|(_, inode)| inode)
-            .ok_or(FuseError::NO_EXIST)
-    }
-
-    pub fn find_by_name<P: AsRef<Path>>(
-        &'a self,
-        parent: u64,
+    pub fn find_child_by_name<P: AsRef<Path>>(
+        &self,
+        parent_node: NodeIndex,
         name: P,
-    ) -> FuseResult<&'a RwLock<Inode>> {
-        self.0
-            .iter()
+    ) -> Option<(NodeIndex, &Inode)> {
+        self.list
+            .neighbors(parent_node)
+            .map(|index| (index, self.list.node_weight(index).unwrap()))
             .find(|(_, node)| {
-                let node = node.read().unwrap();
-
-                node.parent_id == parent
-                    && node.proxy_path.file_name().unwrap_or(OsStr::new(".."))
-                        == name.as_ref().as_os_str()
+                node.proxy_path.file_name().unwrap_or(OsStr::new("..")) == name.as_ref().as_os_str()
             })
-            .map(|(_, inode)| inode)
-            .ok_or(FuseError::NO_EXIST)
     }
 
-    pub fn find_by_id(&'a self, inode: u64) -> FuseResult<&'a RwLock<Inode>> {
-        self.0
-            .iter()
-            .find(|(id, _)| **id == inode)
-            .map(|(_, inode)| inode)
-            .ok_or(FuseError::NO_EXIST)
+    pub fn find_by_id(&self, inode: u64) -> Option<(NodeIndex, &Inode)> {
+        Bfs::new(&self.list, NodeIndex::default())
+            .iter(&self.list)
+            .map(|index| (index, self.list.node_weight(index).unwrap()))
+            .find(|(_, node)| node.attr.ino == inode)
     }
 
-    fn get(&self, id: u64) -> Option<&RwLock<Inode>> {
-        self.0.get(&id)
+    pub fn find_child_by_name_mut<P: AsRef<Path>>(
+        &mut self,
+        parent_node: NodeIndex,
+        name: P,
+    ) -> Option<(NodeIndex, &mut Inode)> {
+        self.list
+            .neighbors(parent_node)
+            .find(|&node_index| {
+                let node = self
+                    .list
+                    .node_weight(node_index)
+                    .expect("should be safe to unwrap as we within the valid index range");
+                node.proxy_path.file_name().unwrap_or(OsStr::new("..")) == name.as_ref().as_os_str()
+            })
+            .map(|node_index| {
+                (
+                    node_index,
+                    self.list
+                        .node_weight_mut(node_index)
+                        .expect("should be safe to unwrap as we within the valid index range"),
+                )
+            })
+    }
+
+    pub fn find_by_id_mut(&mut self, inode: u64) -> Option<(NodeIndex, &mut Inode)> {
+        Bfs::new(&self.list, NodeIndex::default())
+            .iter(&self.list)
+            .find(|&node_index| {
+                let node = self
+                    .list
+                    .node_weight(node_index)
+                    .expect("should be safe to unwrap as we within the valid index range");
+                node.attr.ino == inode
+            })
+            .map(|node_index| {
+                (
+                    node_index,
+                    self.list
+                        .node_weight_mut(node_index)
+                        .expect("should be safe to unwrap as we within the valid index range"),
+                )
+            })
+    }
+
+    pub fn childs(&self, parent_node: NodeIndex) -> impl Iterator<Item = &Inode> {
+        self.list
+            .neighbors(parent_node)
+            .map(|index| self.list.node_weight(index).unwrap())
     }
 }
-
-struct InodeListWriteView<'a>(RwLockWriteGuard<'a, HashMap<u64, RwLock<Inode>>>);
 
 pub struct Rfs {
-    inode_list: InodeList,
+    inode_list: RwLock<InodeList>,
     proxy_mount: PathBuf,
     origin_mount: TempDir,
     mount: Mount,
@@ -139,9 +141,7 @@ impl Rfs {
             .explicit_loopback()
             .mount(source, origin_mount.as_ref())?;
         Ok(Self {
-            inode_list: InodeList {
-                list: RwLock::new(HashMap::new()),
-            },
+            inode_list: RwLock::new(InodeList::default()),
             proxy_mount: mount_point,
             origin_mount,
             mount,
@@ -149,33 +149,41 @@ impl Rfs {
         })
     }
 
-    pub fn inode_list(&self) -> InodeListReadView {
-        self.inode_list.read_view()
+    pub fn inode_list(&self) -> RwLockReadGuard<InodeList> {
+        self.inode_list.read().unwrap()
+    }
+
+    pub fn inode_list_write(&self) -> RwLockWriteGuard<InodeList> {
+        self.inode_list.write().unwrap()
     }
 
     pub fn init(&mut self) {
         let attr = self.stat(&self.origin_mount).unwrap();
+        let root_ino = 1;
+        let attr = attr.with_ino(root_ino).build();
 
-        let root_id = self.inode_list.insert(
+        let mut inode_list = self.inode_list.write().unwrap();
+
+        let root_node = inode_list.list.add_node(Inode::new(
             self.proxy_mount.clone(),
             self.origin_mount.path().to_path_buf(),
-            0,
-            attr.clone(),
-        );
-
-        let _ = self.inode_list.insert(
+            attr,
+        ));
+        let self_reference = Inode::new(
             PathBuf::from("."),
             self.origin_mount.path().to_path_buf(),
-            root_id,
-            attr.clone(),
-        );
-        let _ = self.inode_list.insert(
-            PathBuf::from(".."),
-            self.proxy_mount.parent().unwrap().to_path_buf(),
-            root_id,
             attr,
         );
+        inode_list.insert(self_reference, root_node);
+
+        let upper_folder = Inode::new(
+            PathBuf::from(".."),
+            self.proxy_mount.parent().unwrap().to_path_buf(),
+            attr, // TODO: wrong attributes here
+        );
+        inode_list.insert(upper_folder, root_node);
     }
+
     fn stat<P: AsRef<Path>>(&self, item: P) -> FuseResult<FileAttrBuilder> {
         debug!("Stat with {:?}", item.as_ref());
 
@@ -215,19 +223,18 @@ impl Rfs {
         mode: u32,
         kind: FileType,
     ) -> FuseResult<FileAttr> {
-        let (proxy_path, origin_path) = {
-            let read_view = self.inode_list.read_view();
+        let mut inode_list = self.inode_list.write().unwrap();
 
-            match read_view.find_by_name(parent_ino, name) {
-                Ok(_) => return Err(FuseError::FILE_EXISTS),
-                Err(FuseError::NO_EXIST) => {}
-                Err(error) => return Err(error),
-            };
+        let (parent_node, parent_inode) = inode_list
+            .find_by_id(parent_ino)
+            .ok_or(FuseError::NO_EXIST)?;
 
-            let inode_lock = read_view.find_by_id(parent_ino)?;
-            let inode = inode_lock.read().unwrap();
-            (inode.proxy_path.join(name), inode.origin_path.join(name))
+        if inode_list.find_child_by_name(parent_node, name).is_some() {
+            return Err(FuseError::FILE_EXISTS);
         };
+
+        let proxy_path = parent_inode.proxy_path.join(name);
+        let origin_path = parent_inode.origin_path.join(name);
 
         match kind {
             FileType::RegularFile => {
@@ -250,19 +257,16 @@ impl Rfs {
 
         let attr = FileAttrBuilder::new()
             .with_kind(kind)
-            .with_perm(mode as u16);
+            .with_perm(mode as u16)
+            .build();
 
-        let id = self
-            .inode_list
-            .insert(proxy_path, origin_path, parent_ino, attr);
+        let inode = Inode::new(proxy_path, origin_path, attr);
+        let attr = inode_list.insert(inode, parent_node);
 
-        let read_view = self.inode_list();
-        let inode = read_view.get(id).ok_or(FuseError::IO)?;
-        let inode = inode.read().unwrap();
-        Ok(inode.attr)
+        Ok(attr)
     }
 
-    fn insert_item(&mut self, item: PathBuf, parent_ino: u64) -> FuseResult<()> {
+    fn insert_item(&mut self, item: PathBuf, parent_node: NodeIndex) -> FuseResult<()> {
         let proxy_path = self.origin_path_to_proxy_path(&item);
         match self.clamav.scan(&item) {
             Ok(scan_result) => match scan_result {
@@ -281,29 +285,55 @@ impl Rfs {
             }
         }
 
-        let attr = self.stat(&item)?;
+        let attr = self.stat(&item)?.build();
 
         trace!("Added {:?} item", proxy_path);
-        self.inode_list.insert(proxy_path, item, parent_ino, attr);
+        let inode = Inode::new(proxy_path, item, attr);
 
+        let mut inode_list = self.inode_list.write().unwrap();
+        inode_list.insert(inode, parent_node);
         Ok(())
     }
 
     pub fn add_folder<P: AsRef<Path>>(&mut self, folder: P, ino: u64) -> FuseResult<()> {
         trace!("Adding folder: {:?}...", folder.as_ref());
-        for item in read_dir(folder).map_err(|_| FuseError::last())? {
-            match item {
-                Ok(item) => match self.insert_item(item.path(), ino) {
-                    Ok(()) => {}
-                    Err(err) if err == FuseError::OPERATION_NOT_PERMITTED => {
-                        warn!("Operation is not permitted for {:?}", item.path());
-                        continue;
+        let (items, parent_node) = {
+            let inode_list = self.inode_list.read().unwrap();
+
+            let parent_node = inode_list.find_by_id(ino).ok_or(FuseError::NO_EXIST)?.0;
+
+            let items = read_dir(folder)
+                .map_err(|_| FuseError::last())?
+                .filter_map(|item| match item {
+                    Ok(item) => {
+                        if inode_list
+                            .childs(parent_node)
+                            .any(|child| child.origin_path.file_name().unwrap_or(OsStr::new("..")) == item.file_name())
+                        {
+                            None
+                        } else {
+                            Some(Ok(item))
+                        }
                     }
-                    Err(err) => return Err(err),
-                },
-                Err(_) => {
-                    return Err(FuseError::last());
+                    Err(err) => {
+                        error!("readdir item error: {err}");
+                        Some(Err(FuseError::last()))
+                    }
+                })
+                .collect::<Result<Vec<DirEntry>, FuseError>>()?;
+
+            (items, parent_node)
+        };
+
+
+        for item in items {
+            match self.insert_item(item.path(), parent_node) {
+                Ok(()) => {}
+                Err(err) if err == FuseError::OPERATION_NOT_PERMITTED => {
+                    warn!("Operation is not permitted for {:?}", item.path());
+                    continue;
                 }
+                Err(err) => return Err(err),
             }
         }
 
@@ -311,9 +341,10 @@ impl Rfs {
     }
 
     pub fn allocate_fh(&mut self, inode: u64, read: bool, write: bool) -> FuseResult<u64> {
-        let read_view = self.inode_list.read_view();
-        let inode_lock = read_view.find_by_id(inode)?;
-        let mut inode = inode_lock.write().unwrap();
+        let mut write_view = self.inode_list.write().unwrap();
+        let (_, inode) = write_view
+            .find_by_id_mut(inode)
+            .ok_or(FuseError::NO_EXIST)?;
 
         let count = if let Some(open_handlers) = inode.open_handles.as_mut() {
             open_handlers.count += 1;
@@ -381,21 +412,15 @@ impl Rfs {
             .join(item.as_ref().strip_prefix(&self.origin_mount).unwrap())
     }
 
-    pub fn remove(&mut self, id: u64) -> FuseResult<()> {
-        let mut inode_view = self.inode_list.write_view();
-
-        let inode_lock = inode_view.0.remove(&id).ok_or(FuseError::NO_EXIST)?;
-        let inode = inode_lock.read().unwrap();
+    pub fn remove(&mut self, ino: u64) -> FuseResult<()> {
+        let mut inode_view = self.inode_list.write().unwrap();
+        let (node_index, inode) = inode_view.find_by_id(ino).ok_or(FuseError::NO_EXIST)?;
 
         match inode.attr.kind {
             FileType::RegularFile => {
                 fs::remove_file(&inode.origin_path).map_err(|_| FuseError::last())?;
             }
             FileType::Directory => {
-                inode_view.0.retain(|_, node| {
-                    let node = node.read().unwrap();
-                    node.parent_id != inode.attr.ino
-                }); // delete children
                 fs::remove_dir_all(&inode.origin_path).map_err(|_| FuseError::last())?;
             }
             other => {
@@ -403,6 +428,8 @@ impl Rfs {
                 return Err(FuseError::NOT_IMPLEMENTED);
             }
         }
+
+        let _ = inode_view.list.remove_node(node_index);
 
         Ok(())
     }
@@ -414,28 +441,32 @@ impl Rfs {
         newparent: u64,
         newname: &OsStr,
     ) -> FuseResult<()> {
-        let read_view = self.inode_list.read_view();
+        let mut inode_list = self.inode_list.write().unwrap();
 
-        let new_path = match read_view.find_by_id(newparent) {
-            Ok(inode) => {
-                let inode = inode.read().unwrap();
-                inode.proxy_path.join(newname)
-            }
-            Err(_) => {
-                error!("Can't find newparent inode {}", parent);
-                return Err(FuseError::INVALID_ARGUMENT);
-            }
-        };
+        let (parent_node, _) = inode_list.find_by_id(parent).ok_or(FuseError::NO_EXIST)?;
 
-        let inode_lock = read_view.find_by_name(parent, Path::new(name))?;
-        let mut inode = inode_lock.write().unwrap();
+        let (newparent_node, newparent_inode) = inode_list
+            .find_by_id(newparent)
+            .ok_or(FuseError::NO_EXIST)?;
+        let new_path = newparent_inode.proxy_path.join(newname);
+
+        let (node_index, inode) = inode_list
+            .find_child_by_name_mut(parent_node, name)
+            .ok_or(FuseError::NO_EXIST)?;
 
         let new = self.proxy_path_to_origin_path(new_path.as_path());
         fs::rename(&inode.origin_path, &new).map_err(|_| FuseError::last())?;
 
-        inode.parent_id = newparent;
         inode.proxy_path = new_path;
         inode.origin_path = new;
+
+        let edge = inode_list
+            .list
+            .find_edge(parent_node, node_index)
+            .expect("We found a child above so we shouldn't fail here");
+        let _ = inode_list.list.remove_edge(edge);
+
+        inode_list.list.add_edge(newparent_node, node_index, ());
 
         Ok(())
     }

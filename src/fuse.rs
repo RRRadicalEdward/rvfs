@@ -2,12 +2,11 @@ use std::{
     ffi::OsStr,
     io::{Seek, SeekFrom, Write},
     os::unix::fs::FileExt,
-    path::Path,
     time::{Duration, SystemTime},
 };
 
 use fuser::{
-    FileType, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    Filesystem, FileType, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::c_int;
@@ -18,12 +17,25 @@ use crate::{error::FuseError, rfs::Rfs};
 const DEFUALT_TTL: Duration = Duration::from_secs(1);
 
 macro_rules! fuse_reply_error {
-    ($result:expr, $reply:ident, $fmt:literal, $($fmt_args: tt)*) => {
-        match $result  {
+    ($result:expr, $reply:ident, $message:expr) => {
+        match $result {
             Ok(val) => val,
             Err(err) => {
-                error!(concat!($fmt, "({})"), $($fmt_args)*, err.as_ref());
+                error!("{}: {}({})", line!(), $message, err.as_ref());
                 $reply.error(err.into());
+                return;
+            }
+        }
+    };
+}
+
+macro_rules! fuse_reply_last_error {
+    ($result:expr, $reply:ident, $message:expr) => {
+        match $result {
+            Ok(val) => val,
+            Err(err) => {
+                error!("{}: {}({err})", line!(), $message);
+                $reply.error(FuseError::last().into());
                 return;
             }
         }
@@ -40,14 +52,15 @@ impl Filesystem for Rfs {
     fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let read_view = self.inode_list();
 
-        let inode_lock = fuse_reply_error!(
-            read_view.find_by_name(parent, Path::new(name)),
-            reply,
-            "Can't find item with {:?} name",
-            name
-        );
+        let (parent_node, _) = read_view.find_by_id(parent).unwrap();
 
-        let inode = inode_lock.read().unwrap();
+        let (_, inode) = fuse_reply_error!(
+            read_view
+                .find_child_by_name(parent_node, name)
+                .ok_or(FuseError::NO_EXIST),
+            reply,
+            format!("Can't find item with {name:?} name")
+        );
 
         reply.entry(&DEFUALT_TTL, &inode.attr, 0);
     }
@@ -55,14 +68,11 @@ impl Filesystem for Rfs {
     fn getattr(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyAttr) {
         let read_view = self.inode_list();
 
-        let inode_lock = fuse_reply_error!(
-            read_view.find_by_id(ino),
+        let (_, inode) = fuse_reply_error!(
+            read_view.find_by_id(ino).ok_or(FuseError::NO_EXIST),
             reply,
-            "Can't find inode with {} ino",
-            ino
+            format!("Can't find inode with {ino} ino")
         );
-
-        let inode = inode_lock.read().unwrap();
 
         reply.attr(&Duration::new(0, 0), &inode.attr)
     }
@@ -85,16 +95,13 @@ impl Filesystem for Rfs {
         _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
-        let read_view = self.inode_list();
+        let mut write_view = self.inode_list_write();
 
-        let inode_lock = fuse_reply_error!(
-            read_view.find_by_id(ino),
+        let (_, inode) = fuse_reply_error!(
+            write_view.find_by_id_mut(ino).ok_or(FuseError::NO_EXIST),
             reply,
-            "Cannot find inode with {} ino",
-            ino
+            format!("Cannot find inode with {ino} ino")
         );
-
-        let mut inode = inode_lock.write().unwrap();
 
         if let Some(atime) = atime {
             let time = match atime {
@@ -122,7 +129,7 @@ impl Filesystem for Rfs {
             inode.attr.crtime = crtime;
         }
 
-        reply.attr(&DEFUALT_TTL, &inode.attr)
+        reply.attr(&DEFUALT_TTL, &(inode.attr).clone())
     }
 
     fn mkdir(
@@ -137,8 +144,7 @@ impl Filesystem for Rfs {
         let attr = fuse_reply_error!(
             self.create(name, parent, mode, FileType::Directory),
             reply,
-            "Can't create directory(parent: {})",
-            parent
+            format!("Can't create directory with {parent} parent")
         );
 
         reply.entry(&DEFUALT_TTL, &attr, 0);
@@ -148,15 +154,15 @@ impl Filesystem for Rfs {
         let ino = {
             let read_view = self.inode_list();
 
-            let inode_lock = fuse_reply_error!(
-                read_view.find_by_name(parent, Path::new(name)),
-                reply,
-                "Can't find inode with {} parent and {:?} name",
-                parent,
-                name
-            );
+            let (parent_node, _) = read_view.find_by_id(parent).unwrap();
 
-            let inode = inode_lock.read().unwrap();
+            let (_, inode) = fuse_reply_error!(
+                read_view
+                    .find_child_by_name(parent_node, name)
+                    .ok_or(FuseError::NO_EXIST),
+                reply,
+                format!("Can't find inode with {parent} parent and {name:?} name")
+            );
 
             if inode.attr.kind != FileType::RegularFile {
                 reply.error(FuseError::IS_DIRECTORY.into());
@@ -166,42 +172,43 @@ impl Filesystem for Rfs {
             inode.attr.ino
         };
 
-        fuse_reply_error!(self.remove(ino), reply, "Failed to remove {}", ino);
+        fuse_reply_error!(
+            self.remove(ino),
+            reply,
+            format!("Failed to remove {ino} file")
+        );
 
         reply.ok()
     }
 
     fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let ino = {
-            let read_view = self.inode_list();
+            let inode_list = self.inode_list();
 
-            let inode_lock = fuse_reply_error!(
-                read_view.find_by_name(parent, Path::new(name)),
+            let (parent_node, _) = inode_list.find_by_id(parent).unwrap();
+
+            let (_, inode) = fuse_reply_error!(
+                inode_list
+                    .find_child_by_name(parent_node, name)
+                    .ok_or(FuseError::NO_EXIST),
                 reply,
-                "Can't find inode with {} parent and {:?} name",
-                parent,
-                name
+                format!("Can't find inode with {parent} parent and {name:?} name")
             );
-
-            let inode = inode_lock.read().unwrap();
 
             if inode.attr.kind != FileType::Directory {
                 reply.error(FuseError::NOT_DIRECTORY.into());
                 return;
             }
 
+            if inode_list.childs(parent_node).count() > 0 {
+                reply.error(FuseError::DIRECTORY_NOT_EMPTY.into()); // We have to delete only empty folders
+                return;
+            }
+
             inode.attr.ino
         };
 
-        if self.inode_list().iter_read().filter(|inode|
-            inode.parent_id == ino && inode.proxy_path.file_name().is_some() /* we only have it when filename is ".." */ && inode.proxy_path.file_name() != Some(".".as_ref())
-        ).count() != 0
-        {
-            reply.error(FuseError::DIRECTORY_NOT_EMPTY.into()); // We have to delete only empty folders
-            return;
-        }
-
-        fuse_reply_error!(self.remove(ino), reply, "Failed to remove {}", ino);
+        fuse_reply_error!(self.remove(ino), reply, "Failed to remove {ino} directory");
 
         reply.ok()
     }
@@ -219,11 +226,7 @@ impl Filesystem for Rfs {
         fuse_reply_error!(
             self.rename(parent, name, newparent, newname),
             reply,
-            "Failed to rename item {:?} parent {} to newname {:?} newparent {}",
-            name,
-            parent,
-            newname,
-            newparent
+            format!("Failed to rename item {name:?} with {parent} parent to  {newname:?} newname with {newparent} newparent")
         );
 
         reply.ok()
@@ -265,21 +268,19 @@ impl Filesystem for Rfs {
     ) {
         let read_view = self.inode_list();
 
-        let inode_lock = fuse_reply_error!(
-            read_view.find_by_id(ino),
+        let (_, inode) = fuse_reply_error!(
+            read_view.find_by_id(ino).ok_or(FuseError::NO_EXIST),
             reply,
-            "Cannot find inode with {} ino",
-            ino
+            format!("Cannot find inode with {ino} ino")
         );
 
-        let inode = inode_lock.read().unwrap();
-
         let file = fuse_reply_error!(
-            self.open_file(&inode, fh, true, false),
+            self.open_file(inode, fh, true, false),
             reply,
-            "Failed to open file with inode {} and fh {}",
-            inode.attr.ino,
-            fh
+            format!(
+                "Failed to open file with inode {} and {fh} fh",
+                inode.attr.ino
+            )
         );
 
         let offset = u64::try_from(offset).unwrap();
@@ -289,14 +290,11 @@ impl Filesystem for Rfs {
         );
         let mut buf = vec![0; amount];
 
-        match file.read_exact_at(&mut buf, offset) {
-            Ok(_) => {}
-            Err(err) => {
-                error!("Failed to read {amount} bytes from file: {err}");
-                reply.error(FuseError::last().into());
-                return;
-            }
-        }
+        fuse_reply_last_error!(
+            file.read_exact_at(&mut buf, offset),
+            reply,
+            format!("Failed to read {amount} bytes from file")
+        );
 
         reply.data(&buf)
     }
@@ -313,47 +311,32 @@ impl Filesystem for Rfs {
         _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
-        let read_view = self.inode_list();
-        let mut file = {
-            let inode_lock = fuse_reply_error!(
-                read_view.find_by_id(ino),
-                reply,
-                "Cannot find inode with {} ino",
-                ino
-            );
+        let mut write_view = self.inode_list_write();
+        let (_, inode) = fuse_reply_error!(
+            write_view.find_by_id_mut(ino).ok_or(FuseError::NO_EXIST),
+            reply,
+            format!("Cannot find inode with {ino} ino")
+        );
 
-            let inode = inode_lock.read().unwrap();
+        let mut file = fuse_reply_error!(
+            self.open_file(inode, fh, false, true),
+            reply,
+            format!("Failed to open file with {ino} inode and {fh} fh")
+        );
 
-            fuse_reply_error!(
-                self.open_file(&inode, fh, false, true),
-                reply,
-                "Failed to open file with {} and fh {}",
-                ino,
-                fh
-            )
-        };
+        fuse_reply_last_error!(
+            file.seek(SeekFrom::Start(offset as u64)),
+            reply,
+            format!("File seek failed for file with {ino} inode")
+        );
 
-        match file.seek(SeekFrom::Start(offset as u64)) {
-            Ok(_) => {}
-            Err(err) => {
-                error!("File seek failed for file with {ino} inode: {err}");
-                reply.error(FuseError::last().into());
-                return;
-            }
-        }
+        let written = fuse_reply_last_error!(
+            file.write(data),
+            reply,
+            format!("Failed to write data to file with {ino} inode")
+        );
 
-        let written = match file.write(data) {
-            Ok(written) => written,
-            Err(err) => {
-                error!("Failed to write data to file with {ino} inode: {err}");
-                reply.error(FuseError::last().into());
-                return;
-            }
-        };
-
-        let inode_lock = read_view.find_by_id(ino).unwrap();
-
-        let mut inode = inode_lock.write().unwrap();
+        let (_, inode) = write_view.find_by_id_mut(ino).unwrap();
 
         let attr = &mut inode.attr;
         if data.len() + offset as usize > attr.size as usize {
@@ -377,16 +360,14 @@ impl Filesystem for Rfs {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
-        let read_view = self.inode_list();
+        let mut write_view = self.inode_list_write();
 
-        let inode_lock = fuse_reply_error!(
-            read_view.find_by_id(ino),
+        let (_, inode) = fuse_reply_error!(
+            write_view.find_by_id_mut(ino).ok_or(FuseError::NO_EXIST),
             reply,
-            "Cannot find inode with {} ino",
-            ino
+            format!("Cannot find inode with {ino} ino")
         );
 
-        let mut inode = inode_lock.write().unwrap();
         if let Some(open_handlers) = inode.open_handles.as_mut() {
             open_handlers.count = open_handlers.count.saturating_sub(1);
 
@@ -402,14 +383,12 @@ impl Filesystem for Rfs {
         let (dir, id) = {
             let read_view = self.inode_list();
 
-            let inode_lock = fuse_reply_error!(
-                read_view.find_by_id(ino),
+            let (_, inode) = fuse_reply_error!(
+                read_view.find_by_id(ino).ok_or(FuseError::NO_EXIST),
                 reply,
-                "Cannot find inode with {} ino",
-                ino
+                format!("Cannot find inode with {ino} ino")
             );
 
-            let inode = inode_lock.read().unwrap();
             (inode.origin_path.clone(), inode.attr.ino)
         };
 
@@ -426,35 +405,31 @@ impl Filesystem for Rfs {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
-        let read_view = self.inode_list();
+        let inode_list = self.inode_list();
 
-        let inode_lock = fuse_reply_error!(
-            read_view.find_by_id(ino),
+        let (node_index, _) = fuse_reply_error!(
+            inode_list.find_by_id(ino).ok_or(FuseError::NO_EXIST),
             reply,
-            "Cannot find inode with {} ino",
-            ino
+            format!("Cannot find inode with {ino} ino")
         );
 
-        let inode = inode_lock.read().unwrap();
-        let id = inode.attr.ino;
-
-        for (i, inode) in read_view
-            .iter_read()
-            .filter(|inode| inode.parent_id == id)
+        for (i, child) in inode_list
+            .childs(node_index)
             .enumerate()
             .skip(offset as usize)
             .map(|(i, item)| (i + 1, item))
         {
-            trace!("Replying readdir with: {:?}", inode.proxy_path);
+            trace!("Replying readdir with: {:?}", child.proxy_path);
             if reply.add(
-                inode.attr.ino,
+                child.attr.ino,
                 i as i64,
-                inode.attr.kind,
-                inode.proxy_path.file_name().unwrap_or("..".as_ref()),
+                child.attr.kind,
+                child.proxy_path.file_name().unwrap_or("..".as_ref()),
             ) {
                 break;
             }
         }
+
         reply.ok()
     }
 
@@ -462,10 +437,9 @@ impl Filesystem for Rfs {
         let read_view = self.inode_list();
 
         let _ = fuse_reply_error!(
-            read_view.find_by_id(ino),
+            read_view.find_by_id(ino).ok_or(FuseError::NO_EXIST),
             reply,
-            "Cannot find inode with {} ino",
-            ino
+            format!("Cannot find inode with {ino} ino")
         );
         reply.ok();
     }
@@ -493,8 +467,7 @@ impl Filesystem for Rfs {
         let attr = fuse_reply_error!(
             self.create(name, parent, mode, FileType::RegularFile),
             reply,
-            "Can't create file from {} directory",
-            parent
+            format!("Can't create file from {parent} directory")
         );
 
         let fh = self.allocate_fh(attr.ino, read, write).unwrap();

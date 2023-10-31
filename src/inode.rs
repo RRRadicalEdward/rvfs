@@ -127,7 +127,7 @@ impl FileAttrBuilder {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Clone)]
 pub struct OpenedHandlers {
     pub fh: RawFd,
     pub count: u64,
@@ -139,21 +139,19 @@ impl Drop for OpenedHandlers {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Inode {
     pub proxy_path: PathBuf,
     pub origin_path: PathBuf,
-    pub parent_id: u64,
     pub attr: FileAttr,
     pub open_handles: Option<OpenedHandlers>,
 }
 
 impl Inode {
-    pub fn new(path: PathBuf, origin_path: PathBuf, parent_id: u64, attr: FileAttr) -> Self {
+    pub fn new(path: PathBuf, origin_path: PathBuf, attr: FileAttr) -> Self {
         Inode {
             proxy_path: path,
             origin_path,
-            parent_id,
             attr,
             open_handles: None,
         }

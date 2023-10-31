@@ -19,6 +19,7 @@ anyhow = "1.0.70"
 ctrlc = { version = "3.2.5", features = ["termination"] }
 sys-mount = "2.1.0"
 clamav-rs = { git = "https://github.com/kpcyrd/clamav-rs.git", branch = "clamav-1.0" }
+petgraph = "0.6.4"
 pico-args = "0.5.0"
 
 [patch.crates-io.loopdev]

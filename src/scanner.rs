@@ -16,8 +16,8 @@ impl ClamAV {
         clamav_rs::initialize().map_err(Into::<anyhow::Error>::into)?;
 
         let engine = Engine::new();
-        //engine.load_databases(&db::default_directory())?;
-        //engine.compile()?;
+        engine.load_databases(&db::default_directory())?;
+        engine.compile()?;
 
         let settings = ScanSettingsBuilder::new()
             .enable_archive()
