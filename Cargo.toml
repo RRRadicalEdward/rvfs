@@ -10,17 +10,17 @@ name = "rvfs"
 path = "src/main.rs"
 
 [dependencies]
-fuser = { git = "https://github.com/RRRadicalEdward/fuser", branch = "optimizations" }
-simplelog = "0.12.1"
-log = "0.4.20"
+fuser = { git = "https://github.com/cberner/fuser.git" }
+simplelog = "0.12"
+log = "0.4"
 libc = "0.2"
-tempdir = "0.3.7"
-anyhow = "1.0.70"
-ctrlc = { version = "3.2.5", features = ["termination"] }
-sys-mount = "2.1.0"
+tempdir = "0.3"
+anyhow = "1"
+ctrlc = { version = "3.4", features = ["termination"] }
+sys-mount = "2.1"
 clamav-rs = { git = "https://github.com/kpcyrd/clamav-rs.git", branch = "clamav-1.0" }
-petgraph = "0.6.4"
-pico-args = "0.5.0"
+petgraph = "0.6"
+pico-args = "0.5"
 
 [patch.crates-io.loopdev]
 git = "https://github.com/mulkieran/loopdev"
@@ -29,5 +29,6 @@ branch = "bump-bindgen-reduce-version"
 [profile.release]
 opt-level = 3
 lto = true
-debug = true
+strip = true
+codegen-units = 1
 panic = "abort"
