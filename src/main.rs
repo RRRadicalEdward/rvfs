@@ -32,7 +32,7 @@ fn main() {
     ctrlc::set_handler(move || {
         umount.unmount().expect("Failed to unmount FUSE mount");
     })
-        .expect("Failed to set Ctrl-C handler");
+    .expect("Failed to set Ctrl-C handler");
 
     session.run().unwrap()
 }

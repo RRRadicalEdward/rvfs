@@ -1,8 +1,7 @@
-use std::fs::DirEntry;
 use std::{
     ffi::OsStr,
     fs,
-    fs::{read_dir, File},
+    fs::{read_dir, DirEntry, File},
     mem::ManuallyDrop,
     ops::Add,
     os::{
@@ -18,104 +17,17 @@ use anyhow::Context;
 use clamav_rs::engine::ScanResult;
 use fuser::{FileAttr, FileType};
 use log::{debug, error, info, trace, warn};
-use petgraph::{prelude::*, visit::Walker, Graph};
+use petgraph::stable_graph::NodeIndex;
 use sys_mount::{Mount, Unmount, UnmountFlags};
 use tempdir::TempDir;
 
 use crate::{
     error::FuseError,
-    inode::{FileAttrBuilder, Inode, OpenedHandlers},
+    inode::{FileAttrBuilder, Inode, InodeList, OpenedHandlers},
     scanner::ClamAV,
 };
 
 type FuseResult<T> = Result<T, FuseError>;
-
-#[derive(Default)]
-pub struct InodeList {
-    list: Graph<Inode, ()>,
-}
-
-impl InodeList {
-    fn insert(&mut self, mut node: Inode, parent_node: NodeIndex) -> FileAttr {
-        let node_id = self.list.node_count() as u64 + 1;
-        node.attr.ino = node_id;
-        let attr = node.attr;
-        let node = self.list.add_node(node);
-
-        self.list.add_edge(parent_node, node, ());
-        attr
-    }
-
-    pub fn find_child_by_name<P: AsRef<Path>>(
-        &self,
-        parent_node: NodeIndex,
-        name: P,
-    ) -> Option<(NodeIndex, &Inode)> {
-        self.list
-            .neighbors(parent_node)
-            .map(|index| (index, self.list.node_weight(index).unwrap()))
-            .find(|(_, node)| {
-                node.proxy_path.file_name().unwrap_or(OsStr::new("..")) == name.as_ref().as_os_str()
-            })
-    }
-
-    pub fn find_by_id(&self, inode: u64) -> Option<(NodeIndex, &Inode)> {
-        Bfs::new(&self.list, NodeIndex::default())
-            .iter(&self.list)
-            .map(|index| (index, self.list.node_weight(index).unwrap()))
-            .find(|(_, node)| node.attr.ino == inode)
-    }
-
-    pub fn find_child_by_name_mut<P: AsRef<Path>>(
-        &mut self,
-        parent_node: NodeIndex,
-        name: P,
-    ) -> Option<(NodeIndex, &mut Inode)> {
-        self.list
-            .neighbors(parent_node)
-            .find(|&node_index| {
-                let node = self
-                    .list
-                    .node_weight(node_index)
-                    .expect("should be safe to unwrap as we within the valid index range");
-                node.proxy_path.file_name().unwrap_or(OsStr::new("..")) == name.as_ref().as_os_str()
-            })
-            .map(|node_index| {
-                (
-                    node_index,
-                    self.list
-                        .node_weight_mut(node_index)
-                        .expect("should be safe to unwrap as we within the valid index range"),
-                )
-            })
-    }
-
-    pub fn find_by_id_mut(&mut self, inode: u64) -> Option<(NodeIndex, &mut Inode)> {
-        Bfs::new(&self.list, NodeIndex::default())
-            .iter(&self.list)
-            .find(|&node_index| {
-                let node = self
-                    .list
-                    .node_weight(node_index)
-                    .expect("should be safe to unwrap as we within the valid index range");
-                node.attr.ino == inode
-            })
-            .map(|node_index| {
-                (
-                    node_index,
-                    self.list
-                        .node_weight_mut(node_index)
-                        .expect("should be safe to unwrap as we within the valid index range"),
-                )
-            })
-    }
-
-    pub fn childs(&self, parent_node: NodeIndex) -> impl Iterator<Item = &Inode> {
-        self.list
-            .neighbors(parent_node)
-            .map(|index| self.list.node_weight(index).unwrap())
-    }
-}
 
 pub struct Rfs {
     inode_list: RwLock<InodeList>,
@@ -306,10 +218,10 @@ impl Rfs {
                 .map_err(|_| FuseError::last())?
                 .filter_map(|item| match item {
                     Ok(item) => {
-                        if inode_list
-                            .childs(parent_node)
-                            .any(|child| child.origin_path.file_name().unwrap_or(OsStr::new("..")) == item.file_name())
-                        {
+                        if inode_list.childs(parent_node).any(|child| {
+                            child.origin_path.file_name().unwrap_or(OsStr::new(".."))
+                                == item.file_name()
+                        }) {
                             None
                         } else {
                             Some(Ok(item))
@@ -324,7 +236,6 @@ impl Rfs {
 
             (items, parent_node)
         };
-
 
         for item in items {
             match self.insert_item(item.path(), parent_node) {

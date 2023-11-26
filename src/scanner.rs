@@ -28,13 +28,9 @@ impl ClamAV {
             .enable_phishing_blockcloak()
             .enable_elf()
             .enable_pdf()
-            .enable_structured()
-            .enable_structured_ssn_normal()
-            .enable_structured_ssn_stripped()
             .enable_partial_message()
             .enable_heuristic_precedence()
             .block_macros()
-            .enable_structured()
             .enable_xmldocs()
             .enable_hwp3()
             .build();

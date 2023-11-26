@@ -18,7 +18,7 @@ tempdir = "0.3"
 anyhow = "1"
 ctrlc = { version = "3.4", features = ["termination"] }
 sys-mount = "2.1"
-clamav-rs = { git = "https://github.com/kpcyrd/clamav-rs.git", branch = "clamav-1.0" }
+clamav-rs = { git = "https://github.com/kpcyrd/clamav-rs.git", branch = "clamav-1.2" }
 petgraph = "0.6"
 pico-args = "0.5"
 

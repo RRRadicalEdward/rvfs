@@ -1,11 +1,100 @@
 use std::{
+    ffi::OsStr,
     fs::File,
     os::fd::{FromRawFd, RawFd},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::SystemTime,
 };
 
 use fuser::{FileAttr, FileType};
+use petgraph::{prelude::*, visit::Walker};
+
+#[derive(Default)]
+pub struct InodeList {
+    pub list: Graph<Inode, ()>,
+}
+
+impl InodeList {
+    pub fn insert(&mut self, mut node: Inode, parent_node: NodeIndex) -> FileAttr {
+        let node_id = self.list.node_count() as u64 + 1;
+        node.attr.ino = node_id;
+        let attr = node.attr;
+        let node = self.list.add_node(node);
+
+        self.list.add_edge(parent_node, node, ());
+        attr
+    }
+
+    pub fn find_child_by_name<P: AsRef<Path>>(
+        &self,
+        parent_node: NodeIndex,
+        name: P,
+    ) -> Option<(NodeIndex, &Inode)> {
+        self.list
+            .neighbors(parent_node)
+            .map(|index| (index, self.list.node_weight(index).unwrap()))
+            .find(|(_, node)| {
+                node.proxy_path.file_name().unwrap_or(OsStr::new("..")) == name.as_ref().as_os_str()
+            })
+    }
+
+    pub fn find_by_id(&self, inode: u64) -> Option<(NodeIndex, &Inode)> {
+        Bfs::new(&self.list, NodeIndex::default())
+            .iter(&self.list)
+            .map(|index| (index, self.list.node_weight(index).unwrap()))
+            .find(|(_, node)| node.attr.ino == inode)
+    }
+
+    pub fn find_child_by_name_mut<P: AsRef<Path>>(
+        &mut self,
+        parent_node: NodeIndex,
+        name: P,
+    ) -> Option<(NodeIndex, &mut Inode)> {
+        self.list
+            .neighbors(parent_node)
+            .find(|&node_index| {
+                let node = self
+                    .list
+                    .node_weight(node_index)
+                    .expect("should be safe to unwrap as we within the valid index range");
+                node.proxy_path.file_name().unwrap_or(OsStr::new("..")) == name.as_ref().as_os_str()
+            })
+            .map(|node_index| {
+                (
+                    node_index,
+                    self.list
+                        .node_weight_mut(node_index)
+                        .expect("should be safe to unwrap as we within the valid index range"),
+                )
+            })
+    }
+
+    pub fn find_by_id_mut(&mut self, inode: u64) -> Option<(NodeIndex, &mut Inode)> {
+        Bfs::new(&self.list, NodeIndex::default())
+            .iter(&self.list)
+            .find(|&node_index| {
+                let node = self
+                    .list
+                    .node_weight(node_index)
+                    .expect("should be safe to unwrap as we within the valid index range");
+                node.attr.ino == inode
+            })
+            .map(|node_index| {
+                (
+                    node_index,
+                    self.list
+                        .node_weight_mut(node_index)
+                        .expect("should be safe to unwrap as we within the valid index range"),
+                )
+            })
+    }
+
+    pub fn childs(&self, parent_node: NodeIndex) -> impl Iterator<Item = &Inode> {
+        self.list
+            .neighbors(parent_node)
+            .map(|index| self.list.node_weight(index).unwrap())
+    }
+}
 
 #[derive(Default, Clone)]
 pub struct FileAttrBuilder {

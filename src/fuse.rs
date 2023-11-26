@@ -6,7 +6,7 @@ use std::{
 };
 
 use fuser::{
-    Filesystem, FileType, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    FileType, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::c_int;
@@ -335,8 +335,6 @@ impl Filesystem for Rfs {
             reply,
             format!("Failed to write data to file with {ino} inode")
         );
-
-        let (_, inode) = write_view.find_by_id_mut(ino).unwrap();
 
         let attr = &mut inode.attr;
         if data.len() + offset as usize > attr.size as usize {
